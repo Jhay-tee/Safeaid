@@ -25,14 +25,16 @@ export default defineConfig(({ mode }) => {
           orientation: "portrait",
           icons: [
             {
-              src: "https://picsum.photos/seed/safeaid-icon/192/192",
+              src: "https://img.icons8.com/ios-filled/192/ffffff/shield.png",
               sizes: "192x192",
               type: "image/png",
+              purpose: "any maskable",
             },
             {
-              src: "https://picsum.photos/seed/safeaid-icon/512/512",
+              src: "https://img.icons8.com/ios-filled/512/ffffff/shield.png",
               sizes: "512x512",
               type: "image/png",
+              purpose: "any maskable",
             },
           ],
         },
@@ -46,7 +48,7 @@ export default defineConfig(({ mode }) => {
                 cacheName: "google-fonts-cache",
                 expiration: {
                   maxEntries: 10,
-                  maxAgeSeconds: 60 * 60 * 24 * 365, // <== 365 days
+                  maxAgeSeconds: 60 * 60 * 24 * 365, // 365 days
                 },
                 cacheableResponse: {
                   statuses: [0, 200],
