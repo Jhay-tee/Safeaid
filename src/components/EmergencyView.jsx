@@ -17,6 +17,7 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
   const [aiResponse, setAiResponse] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [lastRequestTime, setLastRequestTime] = useState(0);
 
   useEffect(() => {
     const handleTrigger = (e) => {
@@ -33,7 +34,16 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
 
   const handleSend = async (retryInput) => {
     const textToUse = retryInput || input;
-    if (!textToUse.trim()) return;
+    if (!textToUse.trim() || isLoading) return;
+    
+    // Cooldown check (2 seconds)
+    const now = Date.now();
+    if (now - lastRequestTime < 2000) {
+      setError("Please wait a moment before sending another request.");
+      return;
+    }
+    setLastRequestTime(now);
+
     if (isLimitReached) {
       setError("You've reached your limit. Please sign in to continue.");
       return;

@@ -38,6 +38,7 @@ export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
   });
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [lastRequestTime, setLastRequestTime] = useState(0);
   const [contextMenu, setContextMenu] = useState(null);
   const messagesEndRef = useRef(null);
   const config = TYPE_CONFIG[type];
@@ -60,20 +61,30 @@ export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
     const textToUse = retryInput || input;
     if (!textToUse.trim() || isLoading) return;
     
+    // Cooldown check (2 seconds)
+    const now = Date.now();
+    if (now - lastRequestTime < 2000) {
+      setError("Please wait a moment before sending another message.");
+      return;
+    }
+    setLastRequestTime(now);
+    
     if (isLimitReached) {
       setError("You've reached your limit. Please sign in to continue.");
       return;
     }
 
-    const userMessage = { 
-      id: Date.now().toString(), 
-      role: "user", 
-      content: textToUse,
-      timestamp: new Date().toISOString()
-    };
-
-    setMessages(prev => [...prev, userMessage]);
-    setInput("");
+    if (!retryInput) {
+      const userMessage = { 
+        id: Date.now().toString(), 
+        role: "user", 
+        content: textToUse,
+        timestamp: new Date().toISOString()
+      };
+      setMessages(prev => [...prev, userMessage]);
+      setInput("");
+    }
+    
     setIsLoading(true);
     setError(null);
 
@@ -238,9 +249,18 @@ export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
         )}
 
         {error && (
-          <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-2xl text-xs text-red-400 font-medium">
-            {error}
-            <button onClick={() => handleSend()} className="ml-2 underline">Retry</button>
+          <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-2xl text-xs text-red-400 font-medium flex items-center justify-between gap-4">
+            <span>{error}</span>
+            <button 
+              onClick={() => {
+                const lastUserMsg = [...messages].reverse().find(m => m.role === "user");
+                if (lastUserMsg) handleSend(lastUserMsg.content);
+                else handleSend();
+              }} 
+              className="px-3 py-1 bg-red-500/20 rounded-lg hover:bg-red-500/30 transition-colors shrink-0 font-bold uppercase tracking-tighter"
+            >
+              Retry
+            </button>
           </div>
         )}
         <div ref={messagesEndRef} />
