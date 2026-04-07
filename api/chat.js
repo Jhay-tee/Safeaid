@@ -6,7 +6,7 @@ function getGenAI() {
   if (!genAI) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey || apiKey.includes("YOUR_API_KEY") || apiKey.includes("MY_GEMINI_API_KEY")) {
-      throw new Error("GEMINI_API_KEY is missing or invalid. Please go to 'Settings' > 'Secrets' in AI Studio and add your GEMINI_API_KEY.");
+      throw new Error("GEMINI_API_KEY is missing or invalid. Please add it in your environment settings.");
     }
     genAI = new GoogleGenerativeAI(apiKey);
   }
@@ -21,33 +21,44 @@ export default async function handler(req, res) {
   try {
     const { message, type } = req.body;
     const ai = getGenAI();
-    const model = ai.getGenerativeModel({ model: "gemini-2.0-flash" });
+    const model = ai.getGenerativeModel({ model: "gemini-2.5-flash" });
 
-    let systemPrompt = `You are SafeAid, a professional, highly accurate AI emergency and health assistant. 
+    let systemPrompt = `You are SafeAid, a professional, highly accurate AI emergency and health assistant.
     
     CRITICAL INSTRUCTIONS:
-    1. CALM THE USER: Always start by reassuring the user in a calm, professional tone. Use phrases like "I'm here to help you," "Stay calm, we are taking action," or "Take a deep breath, you're not alone."
+    1. CALM THE USER: Always start by reassuring the user in a calm, professional tone.
     2. ACCURACY: Provide precise, medically-sound (but simplified) first-aid steps.
-    3. EMERGENCY TRIGGER: If the user describes a life-threatening situation or a crime/fire in progress, you MUST include one of the following tags at the VERY END of your response based on the need:
-       - For medical emergencies: [TRIGGER_EMERGENCY:ambulance]
-       - For crimes or security threats: [TRIGGER_EMERGENCY:police]
-       - For fires or rescue: [TRIGGER_EMERGENCY:fire]
+    3. EMERGENCY TRIGGER: If the user describes a life-threatening situation, append [TRIGGER_EMERGENCY:ambulance/police/fire].
     4. DISCLAIMER: Always remind them you are an AI and they should seek professional help.
     
     Current Mode: ${type === "emergency" ? "CRITICAL EMERGENCY" : "Health Inquiry"}`;
 
-    const result = await model.generateContent([systemPrompt, message]);
-    const response = await result.response;
-    const text = response.text();
+    // Set headers for streaming (Server-Sent Events)
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
 
-    res.json({ text });
+    const result = await model.generateContentStream({
+      contents: [{ role: "user", parts: [{ text: `${systemPrompt}\n${message}` }] }],
+    });
+
+    for await (const chunk of result.stream) {
+      const text = chunk.text();
+      if (text) {
+        res.write(`data: ${JSON.stringify({ text })}\n\n`);
+      }
+    }
+
+    res.end();
   } catch (error) {
-    console.error("Chat Error:", error);
+    console.error("Streaming Error:", error);
     if (error.message?.includes("429") || error.message?.includes("quota")) {
-      return res.status(429).json({ 
-        error: "SafeAid AI is currently busy (Rate Limit Reached). Please wait a few seconds and try again." 
+      return res.status(429).json({
+        error: "SafeAid AI is currently busy (Rate Limit Reached). Please wait and try again."
       });
     }
-    res.status(500).json({ error: error.message || "Failed to get AI response" });
+    res.status(500).json({ error: error.message || "Failed to stream AI response" });
   }
 }
