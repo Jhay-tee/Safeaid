@@ -58,7 +58,11 @@ export default async function handler(req, res) {
     res.json({ text: response.text() });
   } catch (error) {
     console.error("Summarize Error:", error);
+    if (error.message?.includes("429") || error.message?.includes("quota")) {
+      return res.status(429).json({ 
+        error: "Analysis limit reached. Please wait a few seconds and try again." 
+      });
+    }
     res.status(500).json({ error: error.message || "Failed to analyze image" });
   }
 }
-  

@@ -43,6 +43,11 @@ export default async function handler(req, res) {
     res.json({ text });
   } catch (error) {
     console.error("Chat Error:", error);
+    if (error.message?.includes("429") || error.message?.includes("quota")) {
+      return res.status(429).json({ 
+        error: "SafeAid AI is currently busy (Rate Limit Reached). Please wait a few seconds and try again." 
+      });
+    }
     res.status(500).json({ error: error.message || "Failed to get AI response" });
   }
 }
