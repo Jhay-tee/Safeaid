@@ -25,15 +25,15 @@ export default defineConfig(({ mode }) => {
           orientation: "portrait",
           icons: [
             {
-              src: "https://png.pngtree.com/png-vector/20190417/ourmid/pngtree-vector-shield-icon-png-image_947000.jpg",
+              src: "/public/icons/download.png",
               sizes: "192x192",
-              type: "image/jpg",
+              type: "image/png",
               purpose: "any maskable",
             },
             {
-              src: "https://png.pngtree.com/png-vector/20190417/ourmid/pngtree-vector-shield-icon-png-image_947000.jpg",
+              src: "/public/icons/download.png",
               sizes: "512x512",
-              type: "image/jpg",
+              type: "image/png",
               purpose: "any maskable",
             },
           ],
