@@ -1,0 +1,5 @@
+{
+  "name": "SafeAid",
+  "description": "An AI-powered emergency and health assistant providing quick first-aid steps, emergency calling, and medical record summarization.",
+  "requestFramePermissions": ["camera"]
+}
