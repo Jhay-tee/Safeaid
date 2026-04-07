@@ -57,80 +57,100 @@ export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
     scrollToBottom();
   }, [messages, isLoading, scrollToBottom]);
 
-  const handleSend = async (retryInput) => {
-    const textToUse = retryInput || input;
-    if (!textToUse.trim() || isLoading) return;
-    
-    // Cooldown check (2 seconds)
-    const now = Date.now();
-    if (now - lastRequestTime < 2000) {
-      setError("Please wait a moment before sending another message.");
-      return;
-    }
-    setLastRequestTime(now);
-    
-    if (isLimitReached) {
-      setError("You've reached your limit. Please sign in to continue.");
-      return;
-    }
+const handleSend = async (retryInput) => {
+  const textToUse = retryInput || input;
+  if (!textToUse.trim() || isLoading) return;
 
-    if (!retryInput) {
-      const userMessage = { 
-        id: Date.now().toString(), 
-        role: "user", 
-        content: textToUse,
-        timestamp: new Date().toISOString()
-      };
-      setMessages(prev => [...prev, userMessage]);
-      setInput("");
-    }
-    
-    setIsLoading(true);
-    setError(null);
+  // Cooldown check (2 seconds)
+  const now = Date.now();
+  if (now - lastRequestTime < 2000) {
+    setError("Please wait a moment before sending another message.");
+    return;
+  }
+  setLastRequestTime(now);
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000);
+  if (isLimitReached) {
+    setError("You've reached your limit. Please sign in to continue.");
+    return;
+  }
 
-    try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: textToUse, type }),
-        signal: controller.signal,
-      });
+  if (!retryInput) {
+    const userMessage = {
+      id: Date.now().toString(),
+      role: "user",
+      content: textToUse,
+      timestamp: new Date().toISOString(),
+    };
+    setMessages((prev) => [...prev, userMessage]);
+    setInput("");
+  }
 
-      clearTimeout(timeoutId);
-      const data = await res.json();
-      
-      if (!res.ok) throw new Error(data.error || `Request failed with status ${res.status}`);
-      
-      let text = data.text;
-      
-      // Check for emergency trigger
-      const triggerMatch = text.match(/\[TRIGGER_EMERGENCY:(\w+)\]/i);
-      if (triggerMatch) {
-        const service = triggerMatch[1].toLowerCase();
-        text = text.replace(triggerMatch[0], "").trim();
-        window.dispatchEvent(new CustomEvent("trigger-emergency", { detail: { service } }));
+  setIsLoading(true);
+  setError(null);
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 20000);
+
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: textToUse, type }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    // ✅ Streaming reader instead of res.json()
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop(); // keep incomplete chunk
+
+      for (const part of parts) {
+        if (part.startsWith("data:")) {
+          const jsonStr = part.replace("data: ", "");
+          const { text } = JSON.parse(jsonStr);
+
+          // Check for emergency trigger
+          const triggerMatch = text.match(/\[TRIGGER_EMERGENCY:(\w+)\]/i);
+          let cleanText = text;
+          if (triggerMatch) {
+            const service = triggerMatch[1].toLowerCase();
+            cleanText = text.replace(triggerMatch[0], "").trim();
+            window.dispatchEvent(
+              new CustomEvent("trigger-emergency", { detail: { service } })
+            );
+          }
+
+          const aiMessage = {
+            id: Date.now().toString(),
+            role: "assistant",
+            content: cleanText,
+            timestamp: new Date().toISOString(),
+            isNew: true, // Flag for typing effect
+          };
+
+          setMessages((prev) => [...prev, aiMessage]);
+        }
       }
-      
-      const aiMessage = {
-        id: (Date.now() + 1).toString(),
-        role: "assistant",
-        content: text,
-        timestamp: new Date().toISOString(),
-        isNew: true // Flag for typing effect
-      };
-
-      setMessages(prev => [...prev, aiMessage]);
-      incrementUsage();
-    } catch (err) {
-      console.error("Chat Error:", err);
-      setError(err.name === "AbortError" ? "Request timed out." : err.message);
-    } finally {
-      setIsLoading(false);
     }
-  };
+
+    incrementUsage();
+  } catch (err) {
+    console.error("Chat Error:", err);
+    setError(err.name === "AbortError" ? "Request timed out." : err.message);
+  } finally {
+    setIsLoading(false);
+  }
+};
 
   const handleLongPress = (e, message) => {
     e.preventDefault();
