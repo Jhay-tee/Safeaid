@@ -50,13 +50,32 @@ export default function MedicalSummarizer({ incrementUsage, isLimitReached }) {
         body: formData,
       });
 
-      const data = await res.json();
-      
-      if (!res.ok) {
-        throw new Error(data.error || `Analysis failed with status ${res.status}`);
+      // ✅ Streaming reader instead of res.json()
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let buffer = "";
+      let collectedText = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop(); // keep incomplete chunk
+
+        for (const part of parts) {
+          if (part.startsWith("data:")) {
+            const jsonStr = part.replace("data: ", "");
+            const { text } = JSON.parse(jsonStr);
+
+            // Append progressively
+            collectedText += text + " ";
+            setSummary(collectedText.trim());
+          }
+        }
       }
-      
-      setSummary(data.text);
+
       incrementUsage();
     } catch (err) {
       console.error("Summarize Error:", err);
@@ -179,4 +198,4 @@ export default function MedicalSummarizer({ incrementUsage, isLimitReached }) {
       )}
     </div>
   );
-}
+    }
