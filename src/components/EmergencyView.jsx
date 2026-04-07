@@ -47,7 +47,7 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
     const timeoutId = setTimeout(() => controller.abort(), 20000);
 
     try {
-      const res = await fetch("/api/ai/chat", {
+      const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: textToUse, type: "emergency" }),

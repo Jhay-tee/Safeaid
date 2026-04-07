@@ -81,7 +81,7 @@ export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
     const timeoutId = setTimeout(() => controller.abort(), 20000);
 
     try {
-      const res = await fetch("/api/ai/chat", {
+      const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: textToUse, type }),
@@ -214,9 +214,9 @@ export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
                     }} 
                   />
                 ) : (
-                  <Markdown className="prose prose-invert prose-sm max-w-none">
-                    {msg.content}
-                  </Markdown>
+                  <div className="prose prose-invert prose-sm max-w-none">
+                    <Markdown>{msg.content}</Markdown>
+                  </div>
                 )
               )}
             </div>

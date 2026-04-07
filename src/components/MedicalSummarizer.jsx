@@ -45,7 +45,7 @@ export default function MedicalSummarizer({ incrementUsage, isLimitReached }) {
     formData.append("image", file);
 
     try {
-      const res = await fetch("/api/ai/summarize", {
+      const res = await fetch("/api/summarize", {
         method: "POST",
         body: formData,
       });
