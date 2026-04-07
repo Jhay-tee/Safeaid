@@ -56,7 +56,6 @@ export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
   useEffect(() => {
     scrollToBottom();
   }, [messages, isLoading, scrollToBottom]);
-
 const handleSend = async (retryInput) => {
   const textToUse = retryInput || input;
   if (!textToUse.trim() || isLoading) return;
@@ -101,7 +100,20 @@ const handleSend = async (retryInput) => {
 
     clearTimeout(timeoutId);
 
-    // ✅ Streaming reader instead of res.json()
+    // ✅ Create one assistant message placeholder
+    const aiMessageId = (Date.now() + 1).toString();
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: aiMessageId,
+        role: "assistant",
+        content: "",
+        timestamp: new Date().toISOString(),
+        isNew: true, // typing effect flag
+      },
+    ]);
+
+    // ✅ Streaming reader
     const reader = res.body.getReader();
     const decoder = new TextDecoder("utf-8");
     let buffer = "";
@@ -119,7 +131,7 @@ const handleSend = async (retryInput) => {
           const jsonStr = part.replace("data: ", "");
           const { text } = JSON.parse(jsonStr);
 
-          // Check for emergency trigger
+          // Emergency trigger check
           const triggerMatch = text.match(/\[TRIGGER_EMERGENCY:(\w+)\]/i);
           let cleanText = text;
           if (triggerMatch) {
@@ -130,15 +142,14 @@ const handleSend = async (retryInput) => {
             );
           }
 
-          const aiMessage = {
-            id: Date.now().toString(),
-            role: "assistant",
-            content: cleanText,
-            timestamp: new Date().toISOString(),
-            isNew: true, // Flag for typing effect
-          };
-
-          setMessages((prev) => [...prev, aiMessage]);
+          // ✅ Update the single assistant message progressively
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === aiMessageId
+                ? { ...m, content: m.content + cleanText }
+                : m
+            )
+          );
         }
       }
     }
