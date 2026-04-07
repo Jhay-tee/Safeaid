@@ -68,7 +68,7 @@ export default function App() {
     setUsage((prev) => ({ ...prev, count: (prev.count || 0) + 1 }));
   };
 
-  const limit = isAuth ? 10 : 5;
+  const limit = isAuth ? 20 : 10;
   const isLimitReached = usage.count >= limit;
 
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
