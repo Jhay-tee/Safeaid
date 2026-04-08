@@ -19,6 +19,30 @@ function getGenAI() {
   return genAI;
 }
 
+function extractTextFromChunk(chunk) {
+  let text = "";
+
+  try {
+    if (typeof chunk.text === "function") {
+      text = chunk.text() || "";
+    } else if (typeof chunk.text === "string") {
+      text = chunk.text;
+    }
+  } catch (_) {}
+
+  if (!text && chunk.candidates && chunk.candidates.length > 0) {
+    const candidate = chunk.candidates[0];
+    if (candidate.content && candidate.content.parts) {
+      text = candidate.content.parts
+        .filter((p) => !p.thought)
+        .map((p) => (typeof p.text === "string" ? p.text : ""))
+        .join("");
+    }
+  }
+
+  return typeof text === "string" ? text : "";
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -41,7 +65,6 @@ CRITICAL INSTRUCTIONS:
 
 Current Mode: ${type === "emergency" ? "CRITICAL EMERGENCY" : "Health Inquiry"}`;
 
-    // Set headers for streaming (Server-Sent Events)
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
@@ -55,12 +78,7 @@ Current Mode: ${type === "emergency" ? "CRITICAL EMERGENCY" : "Health Inquiry"}`
     });
 
     for await (const chunk of result.stream) {
-      // Safely extract text from different possible fields
-      const text =
-        chunk.text?.() ||
-        chunk.candidates?.[0]?.content?.parts?.[0]?.text ||
-        "";
-
+      const text = extractTextFromChunk(chunk);
       if (text && text.trim()) {
         res.write(`data: ${JSON.stringify({ text })}\n\n`);
       }
@@ -68,39 +86,33 @@ Current Mode: ${type === "emergency" ? "CRITICAL EMERGENCY" : "Health Inquiry"}`
 
     res.end();
   } catch (error) {
-  console.error("Streaming Error:", error);
+    console.error("Streaming Error:", error);
 
-  // If we already started SSE, send an error event
-  if (res.headersSent) {
-    const errorMsg =
-      error.status === 429
-        ? "Quota exceeded for Gemini free tier (20 requests/day). Please wait until your quota resets or upgrade your plan."
-        : error.status === 503
-        ? "Gemini API is currently experiencing high demand. Please try again later."
-        : error.message || "Failed to stream AI response";
+    if (res.headersSent) {
+      const errorMsg =
+        error.status === 429
+          ? "Quota exceeded for Gemini free tier. Please wait until your quota resets or upgrade your plan."
+          : error.status === 503
+          ? "Gemini API is currently experiencing high demand. Please try again later."
+          : error.message || "Failed to stream AI response";
 
-    res.write(`data: ${JSON.stringify({ error: errorMsg })}\n\n`);
-    res.end();
-    return;
+      res.write(`data: ${JSON.stringify({ error: errorMsg })}\n\n`);
+      res.end();
+      return;
+    }
+
+    if (error.status === 429) {
+      res.status(429).json({
+        error: "Quota exceeded for Gemini free tier. Please wait until your quota resets or upgrade your plan.",
+      });
+    } else if (error.status === 503) {
+      res.status(503).json({
+        error: "Gemini API is currently experiencing high demand. Please try again later.",
+      });
+    } else {
+      res.status(500).json({
+        error: error.message || "Failed to stream AI response",
+      });
+    }
   }
-
-  // If streaming never started, safe to send JSON
-  if (error.status === 429) {
-    res.status(429).json({
-      error:
-        "Quota exceeded for Gemini free tier (20 requests/day). Please wait until your quota resets or upgrade your plan.",
-    });
-  } else if (error.status === 503) {
-    res.status(503).json({
-      error: "Gemini API is currently experiencing high demand. Please try again later.",
-    });
-  } else {
-    res.status(500).json({
-      error: error.message || "Failed to stream AI response",
-    });
-  }
-}
-
-
-
 }
