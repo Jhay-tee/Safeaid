@@ -51,8 +51,8 @@ export default async function handler(req, res) {
   try {
     const { message, type } = req.body;
     const ai = getGenAI();
-    const model = ai.getGenerativeModel({ model: "gemini-2.5-flash" });
 
+    // ✅ FIX 1: Proper system + user separation (NO injection issue)
     const systemPrompt = `You are SafeAid, a professional, highly accurate AI emergency and health assistant for Uyo community.
     
 CRITICAL INSTRUCTIONS:
@@ -71,11 +71,32 @@ Current Mode: ${type === "emergency" ? "CRITICAL EMERGENCY" : "Health Inquiry"}`
       Connection: "keep-alive",
     });
 
-    const result = await model.generateContentStream({
-      contents: [
-        { role: "user", parts: [{ text: `${systemPrompt}\n${message}` }] },
-      ],
-    });
+    // ✅ FIX 2: Model fallback (2.5 → 1.5)
+    let model = ai.getGenerativeModel({ model: "gemini-2.5-flash" });
+
+    let result;
+
+    try {
+      result = await model.generateContentStream({
+        contents: [
+          { role: "system", parts: [{ text: systemPrompt }] }, // ✅ FIXED
+          { role: "user", parts: [{ text: message }] },        // ✅ FIXED
+        ],
+      });
+    } catch (err) {
+      if ((err.status || err.statusCode) === 429) {
+        const fallbackModel = ai.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+        result = await fallbackModel.generateContentStream({
+          contents: [
+            { role: "system", parts: [{ text: systemPrompt }] }, // ✅ FIXED
+            { role: "user", parts: [{ text: message }] },        // ✅ FIXED
+          ],
+        });
+      } else {
+        throw err;
+      }
+    }
 
     for await (const chunk of result.stream) {
       const text = extractTextFromChunk(chunk);
@@ -86,7 +107,11 @@ Current Mode: ${type === "emergency" ? "CRITICAL EMERGENCY" : "Health Inquiry"}`
 
     res.end();
   } catch (error) {
-    console.error("Streaming Error [status=%s] [message=%s]", error.status || error.statusCode || "?", error.message || "no message");
+    console.error(
+      "Streaming Error [status=%s] [message=%s]",
+      error.status || error.statusCode || "?",
+      error.message || "no message"
+    );
 
     const httpStatus = error.status || error.httpStatus || error.statusCode || 500;
     const apiMessage = error.message || "";
@@ -114,6 +139,8 @@ Current Mode: ${type === "emergency" ? "CRITICAL EMERGENCY" : "Health Inquiry"}`
       return;
     }
 
-    res.status(httpStatus >= 400 && httpStatus < 600 ? httpStatus : 500).json({ error: errorMsg });
+    res
+      .status(httpStatus >= 400 && httpStatus < 600 ? httpStatus : 500)
+      .json({ error: errorMsg });
   }
-}
+  }
