@@ -86,33 +86,34 @@ Current Mode: ${type === "emergency" ? "CRITICAL EMERGENCY" : "Health Inquiry"}`
 
     res.end();
   } catch (error) {
-    console.error("Streaming Error:", error);
+    console.error("Streaming Error [status=%s] [message=%s]", error.status || error.statusCode || "?", error.message || "no message");
+
+    const httpStatus = error.status || error.httpStatus || error.statusCode || 500;
+    const apiMessage = error.message || "";
+
+    function buildErrorMessage(status, message) {
+      if (status === 429) {
+        return message
+          ? `Rate limited by Gemini API: ${message}`
+          : "Too many requests. Please wait a moment and try again.";
+      }
+      if (status === 503) {
+        return "Gemini API is currently experiencing high demand. Please try again in a few seconds.";
+      }
+      if (status === 404) {
+        return "The AI model could not be found. Please check the model name in your configuration.";
+      }
+      return message || "Failed to get a response from the AI. Please try again.";
+    }
+
+    const errorMsg = buildErrorMessage(httpStatus, apiMessage);
 
     if (res.headersSent) {
-      const errorMsg =
-        error.status === 429
-          ? "Quota exceeded for Gemini free tier. Please wait until your quota resets or upgrade your plan."
-          : error.status === 503
-          ? "Gemini API is currently experiencing high demand. Please try again later."
-          : error.message || "Failed to stream AI response";
-
       res.write(`data: ${JSON.stringify({ error: errorMsg })}\n\n`);
       res.end();
       return;
     }
 
-    if (error.status === 429) {
-      res.status(429).json({
-        error: "Quota exceeded for Gemini free tier. Please wait until your quota resets or upgrade your plan.",
-      });
-    } else if (error.status === 503) {
-      res.status(503).json({
-        error: "Gemini API is currently experiencing high demand. Please try again later.",
-      });
-    } else {
-      res.status(500).json({
-        error: error.message || "Failed to stream AI response",
-      });
-    }
+    res.status(httpStatus >= 400 && httpStatus < 600 ? httpStatus : 500).json({ error: errorMsg });
   }
 }
