@@ -46,29 +46,6 @@ const SERVICES = [
   },
 ];
 
-// Typing effect for AI messages
-function TypingText({ text, speed = 15, onComplete }) {
-  const [displayed, setDisplayed] = useState("");
-  const indexRef = useRef(0);
-
-  useEffect(() => {
-    if (!text) return;
-    indexRef.current = 0;
-    setDisplayed("");
-    const interval = setInterval(() => {
-      setDisplayed((prev) => prev + text[indexRef.current]);
-      indexRef.current += 1;
-      if (indexRef.current >= text.length) {
-        clearInterval(interval);
-        if (onComplete) onComplete();
-      }
-    }, speed);
-    return () => clearInterval(interval);
-  }, [text, speed, onComplete]);
-
-  return <Markdown>{displayed}</Markdown>;
-}
-
 export default function EmergencyView({ incrementUsage, isLimitReached }) {
   const navigate = useNavigate();
   const [selectedService, setSelectedService] = useState(null);
@@ -78,8 +55,12 @@ export default function EmergencyView({ incrementUsage, isLimitReached }) {
   const [error, setError] = useState(null);
   const [lastRequestTime, setLastRequestTime] = useState(0);
   const [contextMenu, setContextMenu] = useState(null);
+  const messagesEndRef = useRef(null);
 
-  // Handle emergency triggers
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, isLoading]);
+
   useEffect(() => {
     const handleTrigger = (e) => {
       const service = SERVICES.find((s) => s.id === e.detail.service);
@@ -89,26 +70,24 @@ export default function EmergencyView({ incrementUsage, isLimitReached }) {
     return () => window.removeEventListener("trigger-emergency", handleTrigger);
   }, []);
 
-  // Back button
   const handleBack = () => {
     if (selectedService) setSelectedService(null);
-    else navigate(-1); // React Router back
+    else navigate(-1);
   };
 
-  // Send message (supports SSE streaming + fallback)
   const handleSend = async (retryInput) => {
     const textToUse = retryInput || input;
     if (!textToUse.trim() || isLoading) return;
 
     const now = Date.now();
     if (now - lastRequestTime < 2000) {
-      setError("Please wait a moment...");
+      setError("Please wait a moment before sending another message.");
       return;
     }
     setLastRequestTime(now);
 
     if (isLimitReached) {
-      setError("Limit reached.");
+      setError("You've reached your limit. Please sign in to continue.");
       return;
     }
 
@@ -129,58 +108,116 @@ export default function EmergencyView({ incrementUsage, isLimitReached }) {
     setError(null);
 
     const aiMessageId = `ai-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
     setMessages((prev) => [
       ...prev,
-      { id: aiMessageId, role: "assistant", content: "", isNew: true, timestamp: new Date().toISOString() },
+      {
+        id: aiMessageId,
+        role: "assistant",
+        content: "",
+        timestamp: new Date().toISOString(),
+      },
     ]);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
 
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: textToUse, type: "emergency" }),
+        signal: controller.signal,
       });
 
-      // Check if SSE stream
-      if (res.body && typeof res.body.getReader === "function") {
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
+      clearTimeout(timeoutId);
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const parts = buffer.split("\n\n");
-          buffer = parts.pop();
+      if (!res.ok) {
+        let errMsg = `Server error (${res.status})`;
+        try {
+          const errData = await res.json();
+          errMsg = errData.error || errMsg;
+        } catch (_) {}
+        setMessages((prev) => prev.filter((m) => m.id !== aiMessageId));
+        setError(errMsg);
+        setIsLoading(false);
+        return;
+      }
 
-          for (const part of parts) {
-            if (!part.startsWith("data:")) continue;
-            const jsonStr = part.replace("data: ", "").trim();
-            if (jsonStr === "[DONE]") continue;
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let buffer = "";
+      let receivedContent = false;
 
-            const { text } = JSON.parse(jsonStr);
-            const triggerMatch = text.match(/\[TRIGGER_EMERGENCY:(\w+)\]/i);
-            let cleanText = text;
-            if (triggerMatch) {
-              cleanText = text.replace(triggerMatch[0], "").trim();
-              window.dispatchEvent(new CustomEvent("trigger-emergency", { detail: { service: triggerMatch[1].toLowerCase() } }));
-            }
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-            setMessages((prev) =>
-              prev.map((m) => (m.id === aiMessageId ? { ...m, content: m.content + cleanText } : m))
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop();
+
+        for (const part of parts) {
+          if (!part.startsWith("data:")) continue;
+
+          const jsonStr = part.replace(/^data:\s*/, "").trim();
+          if (jsonStr === "[DONE]") continue;
+
+          let parsed;
+          try {
+            parsed = JSON.parse(jsonStr);
+          } catch (_) {
+            continue;
+          }
+
+          if (parsed.error) {
+            setMessages((prev) => prev.filter((m) => m.id !== aiMessageId));
+            setError(parsed.error);
+            setIsLoading(false);
+            return;
+          }
+
+          const text =
+            parsed.text ||
+            parsed.candidates?.[0]?.content?.parts?.[0]?.text ||
+            "";
+
+          if (!text || !text.trim()) continue;
+
+          const triggerMatch = text.match(/\[TRIGGER_EMERGENCY:(\w+)\]/i);
+          let cleanText = text;
+          if (triggerMatch) {
+            cleanText = text.replace(triggerMatch[0], "").trim();
+            window.dispatchEvent(
+              new CustomEvent("trigger-emergency", { detail: { service: triggerMatch[1].toLowerCase() } })
             );
           }
+
+          receivedContent = true;
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === aiMessageId ? { ...m, content: m.content + cleanText } : m
+            )
+          );
         }
-      } else {
-        // Fallback: normal JSON response
-        const { text } = await res.json();
-        setMessages((prev) => prev.map((m) => (m.id === aiMessageId ? { ...m, content: text, isNew: false } : m)));
+      }
+
+      if (!receivedContent) {
+        setMessages((prev) => prev.filter((m) => m.id !== aiMessageId));
+        setError("No response received. Please try again.");
+        setIsLoading(false);
+        return;
       }
 
       incrementUsage();
     } catch (err) {
-      setError(err.name === "AbortError" ? "Request timed out." : "Something went wrong.");
+      clearTimeout(timeoutId);
+      setMessages((prev) => prev.filter((m) => m.id !== aiMessageId));
+      if (err.name === "AbortError") {
+        setError("Request timed out. Please try again.");
+      } else {
+        setError(err.message || "Connection failed. Please check your internet and try again.");
+      }
     } finally {
       setIsLoading(false);
     }
@@ -189,7 +226,13 @@ export default function EmergencyView({ incrementUsage, isLimitReached }) {
   const handleLongPress = (e, message) => {
     if (e.cancelable) e.preventDefault();
     const rect = e.currentTarget.getBoundingClientRect();
-    setContextMenu({ visible: true, x: e.clientX || rect.left, y: e.clientY || rect.top, messageId: message.id, content: message.content });
+    setContextMenu({
+      visible: true,
+      x: e.clientX || rect.left,
+      y: e.clientY || rect.top,
+      messageId: message.id,
+      content: message.content,
+    });
   };
 
   const copyToClipboard = (text) => {
@@ -204,13 +247,11 @@ export default function EmergencyView({ incrementUsage, isLimitReached }) {
 
   return (
     <motion.div className="space-y-8">
-      {/* Back Button */}
-      <button onClick={handleBack} className="flex items-center gap-2 text-white/40 hover:text-white">
+      <button onClick={handleBack} className="flex items-center gap-2 text-white/40 hover:text-white transition-colors">
         <ArrowLeft className="w-4 h-4" />
         {selectedService ? "Back to Services" : "Back"}
       </button>
 
-      {/* Service Selection */}
       {selectedService ? (
         <>
           <div className="text-center space-y-6">
@@ -237,65 +278,105 @@ export default function EmergencyView({ incrementUsage, isLimitReached }) {
             </div>
           </div>
 
-          {/* AI Chat */}
           <div className="space-y-4 pt-6">
-            <textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Describe emergency..."
-              className="w-full p-4 bg-white/5 rounded-xl"
-              disabled={isLoading || isLimitReached}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  handleSend();
-                }
-              }}
-            />
-            <button
-              onClick={() => handleSend()}
-              disabled={isLoading || !input.trim() || isLimitReached}
-              className="p-3 bg-white text-black rounded-xl disabled:opacity-50"
-            >
-              {isLoading ? <Loader2 className="animate-spin" /> : <Send />}
-            </button>
-
-            {error && (
-              <div className="text-red-400 flex items-center gap-2">
-                {error}
-                <button
-                  onClick={() => {
-                    const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
-                    if (lastUserMsg) handleSend(lastUserMsg.content);
-                    else handleSend();
-                  }}
+            <div className="space-y-4 max-h-[50vh] overflow-y-auto pr-1 custom-scrollbar">
+              {messages.map((msg) => (
+                <motion.div
+                  key={msg.id}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className={cn(
+                    "flex flex-col max-w-[85%]",
+                    msg.role === "user" ? "ml-auto items-end" : "mr-auto items-start"
+                  )}
+                  onContextMenu={(e) => handleLongPress(e, msg)}
                 >
-                  <RefreshCw />
-                </button>
-              </div>
-            )}
+                  <div
+                    className={cn(
+                      "p-4 rounded-2xl text-sm break-words",
+                      msg.role === "user"
+                        ? "bg-white text-black font-medium rounded-tr-none"
+                        : "bg-white/5 border border-white/10 text-white rounded-tl-none",
+                      msg.deleted && "opacity-40 italic bg-transparent border-dashed"
+                    )}
+                  >
+                    {msg.deleted ? (
+                      <em className="text-white/40">Message deleted</em>
+                    ) : msg.role === "assistant" ? (
+                      msg.content ? (
+                        <div className="prose prose-invert prose-sm max-w-none">
+                          <Markdown>{msg.content}</Markdown>
+                        </div>
+                      ) : (
+                        <span className="opacity-40 text-xs uppercase tracking-widest animate-pulse">Waiting...</span>
+                      )
+                    ) : (
+                      <Markdown>{msg.content}</Markdown>
+                    )}
+                  </div>
+                  <span className="text-[10px] text-white/20 mt-1 uppercase tracking-tighter">
+                    {msg.role === "user" ? "You" : "SafeAid"}
+                  </span>
+                </motion.div>
+              ))}
 
-            {messages.map((msg) => (
-              <div
-                key={msg.id}
-                className={cn(
-                  "p-3 rounded-xl max-w-[75%] break-words shadow-md",
-                  msg.role === "user" ? "self-end bg-blue-600 text-white" : "self-start bg-zinc-800 text-white"
-                )}
-                onContextMenu={(e) => handleLongPress(e, msg)}
+              {isLoading && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  className="flex items-center gap-2 text-white/40 text-[10px] font-bold uppercase tracking-widest ml-2"
+                >
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  SafeAid is responding...
+                </motion.div>
+              )}
+
+              {error && (
+                <motion.div
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="p-4 bg-red-500/10 border border-red-500/20 rounded-2xl text-xs text-red-400 font-medium flex items-center justify-between gap-4"
+                >
+                  <span>{error}</span>
+                  <button
+                    onClick={() => {
+                      setError(null);
+                      const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
+                      if (lastUserMsg) handleSend(lastUserMsg.content);
+                    }}
+                    className="flex items-center gap-1 px-3 py-1 bg-red-500/20 rounded-lg hover:bg-red-500/30 transition-colors shrink-0 font-bold uppercase tracking-tighter"
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                    Retry
+                  </button>
+                </motion.div>
+              )}
+
+              <div ref={messagesEndRef} />
+            </div>
+
+            <div className="relative">
+              <textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder="Describe the emergency..."
+                className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 pr-16 min-h-[60px] max-h-[120px] focus:outline-none focus:border-white/20 transition-colors resize-none text-sm disabled:opacity-50"
+                disabled={isLoading || isLimitReached}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSend();
+                  }
+                }}
+              />
+              <button
+                onClick={() => handleSend()}
+                disabled={isLoading || !input.trim() || isLimitReached}
+                className="absolute bottom-3 right-3 p-2 bg-white text-black rounded-xl shadow-lg hover:bg-white/90 transition-all active:scale-[0.95] disabled:opacity-50"
               >
-                {msg.deleted ? (
-                  <em className="text-gray-400">Message deleted</em>
-                ) : msg.isNew ? (
-                  <TypingText
-                    text={msg.content}
-                    onComplete={() => setMessages((prev) => prev.map((m) => (m.id === msg.id ? { ...m, isNew: false } : m)))}
-                  />
-                ) : (
-                  <Markdown>{msg.content}</Markdown>
-                )}
-              </div>
-            ))}
+                {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
+              </button>
+            </div>
           </div>
         </>
       ) : (
@@ -306,7 +387,7 @@ export default function EmergencyView({ incrementUsage, isLimitReached }) {
               <button
                 key={s.id}
                 onClick={() => setSelectedService(s)}
-                className="p-6 bg-white/5 rounded-2xl flex flex-col items-center gap-2"
+                className="p-6 bg-white/5 border border-white/10 rounded-2xl flex flex-col items-center gap-2 hover:bg-white/10 transition-all active:scale-[0.98]"
               >
                 <Icon className={cn("w-8 h-8", s.color)} />
                 <span className="font-bold text-sm uppercase">{s.name}</span>
@@ -316,7 +397,6 @@ export default function EmergencyView({ incrementUsage, isLimitReached }) {
         </div>
       )}
 
-      {/* Context Menu */}
       <AnimatePresence>
         {contextMenu && (
           <>
@@ -351,4 +431,5 @@ export default function EmergencyView({ incrementUsage, isLimitReached }) {
       </AnimatePresence>
     </motion.div>
   );
-    }
+}
+
