@@ -100,7 +100,7 @@ const handleSend = async (retryInput) => {
 
     clearTimeout(timeoutId);
 
-    // ✅ Create one assistant message placeholder
+    // Create one assistant message placeholder
     const aiMessageId = (Date.now() + 1).toString();
     setMessages((prev) => [
       ...prev,
@@ -109,11 +109,11 @@ const handleSend = async (retryInput) => {
         role: "assistant",
         content: "",
         timestamp: new Date().toISOString(),
-        isNew: true, // typing effect flag
+        isNew: true,
       },
     ]);
 
-    // ✅ Streaming reader
+    // Streaming reader
     const reader = res.body.getReader();
     const decoder = new TextDecoder("utf-8");
     let buffer = "";
@@ -121,15 +121,26 @@ const handleSend = async (retryInput) => {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true });
 
+      buffer += decoder.decode(value, { stream: true });
       const parts = buffer.split("\n\n");
       buffer = parts.pop(); // keep incomplete chunk
 
       for (const part of parts) {
-        if (part.startsWith("data:")) {
-          const jsonStr = part.replace("data: ", "");
-          const { text } = JSON.parse(jsonStr);
+        if (!part.startsWith("data:")) continue;
+
+        try {
+          const jsonStr = part.replace(/^data:\s*/, "");
+          const parsed = JSON.parse(jsonStr);
+
+          // Safely capture text from multiple possible fields
+          let text =
+            parsed.text ||
+            (parsed.candidates &&
+              parsed.candidates[0]?.content?.parts?.[0]?.text) ||
+            "";
+
+          if (!text || !text.trim()) continue;
 
           // Emergency trigger check
           const triggerMatch = text.match(/\[TRIGGER_EMERGENCY:(\w+)\]/i);
@@ -142,7 +153,7 @@ const handleSend = async (retryInput) => {
             );
           }
 
-          // ✅ Update the single assistant message progressively
+          // Update the single assistant message progressively
           setMessages((prev) =>
             prev.map((m) =>
               m.id === aiMessageId
@@ -150,6 +161,8 @@ const handleSend = async (retryInput) => {
                 : m
             )
           );
+        } catch (err) {
+          console.warn("Skipping invalid JSON chunk:", part);
         }
       }
     }
