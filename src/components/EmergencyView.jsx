@@ -15,10 +15,34 @@ import { cn } from "../lib/utils";
 import Markdown from "react-markdown";
 
 const SERVICES = [
-  { id: "ambulance", name: "Ambulance", numbers: ["+2348000022322", "+2348000022422", "+2348037343628", "+2348033597921"], icon: Ambulance, color: "text-red-500" },
-  { id: "police", name: "Police", numbers: ["+2348039213071", "+2348028916010", "+2348020913810", "+2349040000065", "+2349169839215"], icon: Shield, color: "text-blue-500" },
-  { id: "fire", name: "Fire Service", numbers: ["+2348133564978"], icon: Flame, color: "text-orange-500" },
-  { id: "contact", name: "Emergency Contact", numbers: ["112"], icon: UserPlus, color: "text-green-500" },
+  {
+    id: "ambulance",
+    name: "Ambulance",
+    numbers: ["+2348000022322", "+2348000022422", "+2348037343628", "+2348033597921"],
+    icon: Ambulance,
+    color: "text-red-500",
+  },
+  {
+    id: "police",
+    name: "Police",
+    numbers: ["+2348039213071", "+2348028916010", "+2348020913810", "+2349040000065", "+2349169839215"],
+    icon: Shield,
+    color: "text-blue-500",
+  },
+  {
+    id: "fire",
+    name: "Fire Service",
+    numbers: ["+2348133564978"],
+    icon: Flame,
+    color: "text-orange-500",
+  },
+  {
+    id: "contact",
+    name: "Emergency Contact",
+    numbers: ["112"],
+    icon: UserPlus,
+    color: "text-green-500",
+  },
 ];
 
 export default function EmergencyView({ onBack, incrementUsage, isLimitReached }) {
@@ -28,6 +52,7 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
   const [lastRequestTime, setLastRequestTime] = useState(0);
+  const [isTyping, setIsTyping] = useState(false);
   const chatEndRef = useRef(null);
 
   // Listen for emergency triggers
@@ -43,7 +68,7 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
   // Auto-scroll on new messages
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, isTyping]);
 
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
@@ -65,6 +90,7 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
     setInput("");
     setIsLoading(true);
     setError(null);
+    setIsTyping(true);
 
     try {
       const res = await fetch("/api/chat", {
@@ -86,40 +112,24 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
       while (!done) {
         const { value, done: doneReading } = await reader.read();
         done = doneReading;
+        buffer += decoder.decode(value || new Uint8Array(), { stream: true });
 
-        const chunk = decoder.decode(value || new Uint8Array(), { stream: true });
-        buffer += chunk;
+        const chunks = buffer.split("data:");
+        buffer = chunks.pop(); // incomplete chunk stays
 
-        const lines = buffer.split("\n");
-        buffer = lines.pop(); // keep incomplete line
-
-        for (let line of lines) {
-          line = line.trim();
-          if (!line) continue;
-
-          // Strip "data:" prefix if exists
-          if (line.startsWith("data:")) line = line.slice(5).trim();
+        for (let chunk of chunks) {
+          chunk = chunk.trim();
+          if (!chunk) continue;
 
           let text = "";
-
           try {
-            const json = JSON.parse(line);
-
-            // Always pick user-readable text
-            if (json?.text) text = json.text;
-            else if (json?.candidates?.[0]?.content?.parts?.[0]?.text) {
-              text = json.candidates[0].content.parts[0].text;
-            } else if (typeof json === "object") {
-              // Convert any leftover object values to string
-              text = Object.values(json)
-                .map((v) => (typeof v === "string" ? v : JSON.stringify(v)))
-                .join(" ");
-            }
+            const json = JSON.parse(chunk);
+            text = json?.text || "";
           } catch {
-            text = line; // fallback for non-JSON lines
+            text = chunk;
           }
 
-          // Handle triggers
+          // Handle emergency triggers immediately
           const triggerMatch = text.match(/\[TRIGGER_EMERGENCY:(\w+)\]/i);
           if (triggerMatch) {
             const service = triggerMatch[1].toLowerCase();
@@ -130,12 +140,32 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
           }
 
           if (text) {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === aiId ? { ...m, content: m.content + text } : m
-              )
-            );
+            // Split text by words for smoother typing
+            const words = text.split(/(\s+)/);
+            for (let word of words) {
+              if (!word) continue;
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === aiId ? { ...m, content: m.content + word } : m
+                )
+              );
+              await new Promise((r) => setTimeout(r, 20)); // 20ms per word
+            }
           }
+        }
+      }
+
+      // Append leftover buffer
+      if (buffer.trim()) {
+        const words = buffer.trim().split(/(\s+)/);
+        for (let word of words) {
+          if (!word) continue;
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === aiId ? { ...m, content: m.content + word } : m
+            )
+          );
+          await new Promise((r) => setTimeout(r, 20));
         }
       }
 
@@ -144,6 +174,7 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
       setError("Something went wrong.");
     } finally {
       setIsLoading(false);
+      setIsTyping(false);
     }
   };
 
@@ -198,8 +229,6 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
               {isLoading ? <Loader2 className="animate-spin" /> : <Send />}
             </button>
 
-            {isLoading && <p>Sending...</p>}
-
             {error && (
               <div className="text-red-400 flex items-center gap-2">
                 {error}
@@ -210,10 +239,14 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
             {messages
               .filter((m) => m.role === "assistant")
               .map((m) => (
-                <div key={m.id + m.content.length} className="prose prose-invert">
+                <div key={m.id} className="prose prose-invert">
                   <Markdown>{m.content}</Markdown>
                 </div>
               ))}
+
+            {isTyping && (
+              <div className="prose prose-invert text-gray-400 italic">Assistant is typing...</div>
+            )}
 
             <div ref={chatEndRef} />
           </div>
@@ -237,4 +270,4 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
       )}
     </motion.div>
   );
-   }
+              }
