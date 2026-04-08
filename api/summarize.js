@@ -51,7 +51,8 @@ export default async function handler(req, res) {
     const prompt = `Analyze this image as SafeAid Medical Assistant.
     1. Detect if it is a medical document (report, prescription, lab result, etc.).
     2. If YES, summarize it simply for a layperson. Focus on key findings and recommendations.
-    3. Be reassuring and calm.
+    3. Be reassuring and calm and structure your report in a clean, clear, professional and understandable way.
+    4. Avoid the use of big English or complex medical terms by trying to break it down but if in rare cases it cannot be broken down write th word and put the nearest in meaning to it in a bracket 
     4. If NO, return exactly: "This does not appear to be a medical report."`;
 
     // Set headers for streaming (Server-Sent Events)
