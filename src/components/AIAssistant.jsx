@@ -10,11 +10,34 @@ const TYPE_CONFIG = {
   emergency: { name: "Emergency AI", icon: Shield, color: "text-red-500", placeholder: "Describe the emergency..." },
 };
 
+function extractText(parsed) {
+  if (!parsed || typeof parsed !== "object") return "";
+
+  if (typeof parsed.text === "string" && parsed.text.trim()) return parsed.text;
+
+  if (Array.isArray(parsed.candidates) && parsed.candidates.length > 0) {
+    const parts = parsed.candidates[0]?.content?.parts;
+    if (Array.isArray(parts)) {
+      const joined = parts
+        .filter((p) => !p.thought)
+        .map((p) => (typeof p.text === "string" ? p.text : ""))
+        .join("");
+      if (joined.trim()) return joined;
+    }
+  }
+
+  return "";
+}
+
 export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState(() => {
-    const saved = localStorage.getItem(`safeaid_chat_${type}`);
-    return saved ? JSON.parse(saved) : [];
+    try {
+      const saved = localStorage.getItem(`safeaid_chat_${type}`);
+      return saved ? JSON.parse(saved) : [];
+    } catch (_) {
+      return [];
+    }
   });
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -24,7 +47,9 @@ export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
   const config = TYPE_CONFIG[type];
 
   useEffect(() => {
-    localStorage.setItem(`safeaid_chat_${type}`, JSON.stringify(messages));
+    try {
+      localStorage.setItem(`safeaid_chat_${type}`, JSON.stringify(messages));
+    } catch (_) {}
   }, [messages, type]);
 
   const scrollToBottom = useCallback(() => {
@@ -52,13 +77,15 @@ export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
     }
 
     if (!retryInput) {
-      const userMessage = {
-        id: Date.now().toString(),
-        role: "user",
-        content: textToUse,
-        timestamp: new Date().toISOString(),
-      };
-      setMessages((prev) => [...prev, userMessage]);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now().toString(),
+          role: "user",
+          content: textToUse,
+          timestamp: new Date().toISOString(),
+        },
+      ]);
       setInput("");
     }
 
@@ -94,7 +121,7 @@ export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
         let errMsg = `Server error (${res.status})`;
         try {
           const errData = await res.json();
-          errMsg = errData.error || errMsg;
+          errMsg = typeof errData.error === "string" ? errData.error : errMsg;
         } catch (_) {}
         setMessages((prev) => prev.filter((m) => m.id !== aiMessageId));
         setError(errMsg);
@@ -113,13 +140,14 @@ export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
 
         buffer += decoder.decode(value, { stream: true });
         const parts = buffer.split("\n\n");
-        buffer = parts.pop();
+        buffer = parts.pop() ?? "";
 
         for (const part of parts) {
-          if (!part.startsWith("data:")) continue;
+          const trimmed = part.trim();
+          if (!trimmed.startsWith("data:")) continue;
 
-          const jsonStr = part.replace(/^data:\s*/, "").trim();
-          if (jsonStr === "[DONE]") continue;
+          const jsonStr = trimmed.replace(/^data:\s*/, "").trim();
+          if (!jsonStr || jsonStr === "[DONE]") continue;
 
           let parsed;
           try {
@@ -128,19 +156,15 @@ export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
             continue;
           }
 
-          if (parsed.error) {
+          if (parsed && typeof parsed.error === "string") {
             setMessages((prev) => prev.filter((m) => m.id !== aiMessageId));
             setError(parsed.error);
             setIsLoading(false);
             return;
           }
 
-          const text =
-            parsed.text ||
-            parsed.candidates?.[0]?.content?.parts?.[0]?.text ||
-            "";
-
-          if (!text || !text.trim()) continue;
+          const text = extractText(parsed);
+          if (!text) continue;
 
           const triggerMatch = text.match(/\[TRIGGER_EMERGENCY:(\w+)\]/i);
           let cleanText = text;
@@ -150,6 +174,8 @@ export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
               new CustomEvent("trigger-emergency", { detail: { service: triggerMatch[1].toLowerCase() } })
             );
           }
+
+          if (!cleanText) continue;
 
           receivedContent = true;
           setMessages((prev) =>
@@ -162,7 +188,7 @@ export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
 
       if (!receivedContent) {
         setMessages((prev) => prev.filter((m) => m.id !== aiMessageId));
-        setError("No response received. Please try again.");
+        setError("No response received from SafeAid. Please try again.");
         setIsLoading(false);
         return;
       }
@@ -271,7 +297,9 @@ export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
                     <Markdown>{msg.content}</Markdown>
                   </div>
                 ) : (
-                  <span className="opacity-40 text-xs uppercase tracking-widest animate-pulse">Waiting...</span>
+                  <span className="opacity-40 text-xs uppercase tracking-widest animate-pulse">
+                    Waiting for response...
+                  </span>
                 )
               ) : (
                 <div className="prose prose-sm max-w-none">
@@ -379,4 +407,3 @@ export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
     </div>
   );
 }
-
