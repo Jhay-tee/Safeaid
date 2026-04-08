@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from "react";
-import { motion } from "motion/react";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { motion, AnimatePresence } from "motion/react";
 import {
   Phone,
   ArrowLeft,
@@ -45,6 +45,30 @@ const SERVICES = [
   },
 ];
 
+// Typing effect for AI messages
+function TypingText({ text, speed = 15, onComplete }) {
+  const [displayed, setDisplayed] = useState("");
+  const indexRef = useRef(0);
+
+  useEffect(() => {
+    if (indexRef.current >= text.length) {
+      if (onComplete) onComplete();
+      return;
+    }
+    const interval = setInterval(() => {
+      setDisplayed((prev) => prev + text[indexRef.current]);
+      indexRef.current += 1;
+      if (indexRef.current >= text.length) {
+        clearInterval(interval);
+        if (onComplete) onComplete();
+      }
+    }, speed);
+    return () => clearInterval(interval);
+  }, [text, speed, onComplete]);
+
+  return <Markdown>{displayed}</Markdown>;
+}
+
 export default function EmergencyView({ onBack, incrementUsage, isLimitReached }) {
   const [selectedService, setSelectedService] = useState(null);
   const [input, setInput] = useState("");
@@ -52,10 +76,16 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
   const [lastRequestTime, setLastRequestTime] = useState(0);
-  const [isTyping, setIsTyping] = useState(false);
-  const chatEndRef = useRef(null);
+  const [contextMenu, setContextMenu] = useState(null);
+  const messagesEndRef = useRef(null);
 
-  // Listen for emergency triggers
+  const scrollToBottom = useCallback(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, []);
+
+  useEffect(() => scrollToBottom(), [messages, isLoading, scrollToBottom]);
+
+  // Listen to emergency triggers
   useEffect(() => {
     const handleTrigger = (e) => {
       const service = SERVICES.find((s) => s.id === e.detail.service);
@@ -65,17 +95,13 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
     return () => window.removeEventListener("trigger-emergency", handleTrigger);
   }, []);
 
-  // Auto-scroll on new messages
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isTyping]);
-
-  const handleSend = async () => {
-    if (!input.trim() || isLoading) return;
+  const handleSend = async (retryInput) => {
+    const textToUse = retryInput || input;
+    if (!textToUse.trim() || isLoading) return;
 
     const now = Date.now();
     if (now - lastRequestTime < 2000) {
-      setError("Slow down a bit...");
+      setError("Please wait a moment...");
       return;
     }
     setLastRequestTime(now);
@@ -85,97 +111,91 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
       return;
     }
 
-    const userMsg = { id: Date.now().toString(), role: "user", content: input };
-    setMessages((prev) => [...prev, userMsg]);
-    setInput("");
+    if (!retryInput) {
+      setMessages((prev) => [
+        ...prev,
+        { id: Date.now().toString(), role: "user", content: textToUse, timestamp: new Date().toISOString() },
+      ]);
+      setInput("");
+    }
+
     setIsLoading(true);
     setError(null);
-    setIsTyping(true);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
 
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: userMsg.content, type: "emergency" }),
+        body: JSON.stringify({ message: textToUse, type: "emergency" }),
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
 
-      if (!res.ok || !res.body) throw new Error("Bad response");
-
-      const aiId = (Date.now() + 1).toString();
-      setMessages((prev) => [...prev, { id: aiId, role: "assistant", content: "" }]);
+      const aiMessageId = (Date.now() + 1).toString();
+      setMessages((prev) => [
+        ...prev,
+        { id: aiMessageId, role: "assistant", content: "", isNew: true, timestamp: new Date().toISOString() },
+      ]);
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
-      let done = false;
       let buffer = "";
 
-      while (!done) {
-        const { value, done: doneReading } = await reader.read();
-        done = doneReading;
-        buffer += decoder.decode(value || new Uint8Array(), { stream: true });
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
 
-        const chunks = buffer.split("data:");
-        buffer = chunks.pop(); // incomplete chunk stays
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop();
 
-        for (let chunk of chunks) {
-          chunk = chunk.trim();
-          if (!chunk) continue;
+        for (const part of parts) {
+          if (!part.startsWith("data:")) continue;
+          const jsonStr = part.replace("data: ", "").trim();
+          if (jsonStr === "[DONE]") continue;
 
-          let text = "";
-          try {
-            const json = JSON.parse(chunk);
-            text = json?.text || "";
-          } catch {
-            text = chunk;
-          }
+          const { text } = JSON.parse(jsonStr);
 
-          // Handle emergency triggers immediately
           const triggerMatch = text.match(/\[TRIGGER_EMERGENCY:(\w+)\]/i);
+          let cleanText = text;
           if (triggerMatch) {
-            const service = triggerMatch[1].toLowerCase();
+            cleanText = text.replace(triggerMatch[0], "").trim();
             window.dispatchEvent(
-              new CustomEvent("trigger-emergency", { detail: { service } })
+              new CustomEvent("trigger-emergency", { detail: { service: triggerMatch[1].toLowerCase() } })
             );
-            text = text.replace(triggerMatch[0], "").trim();
           }
 
-          if (text) {
-            // Split text by words for smoother typing
-            const words = text.split(/(\s+)/);
-            for (let word of words) {
-              if (!word) continue;
-              setMessages((prev) =>
-                prev.map((m) =>
-                  m.id === aiId ? { ...m, content: m.content + word } : m
-                )
-              );
-              await new Promise((r) => setTimeout(r, 20)); // 20ms per word
-            }
-          }
-        }
-      }
-
-      // Append leftover buffer
-      if (buffer.trim()) {
-        const words = buffer.trim().split(/(\s+)/);
-        for (let word of words) {
-          if (!word) continue;
           setMessages((prev) =>
-            prev.map((m) =>
-              m.id === aiId ? { ...m, content: m.content + word } : m
-            )
+            prev.map((m) => (m.id === aiMessageId ? { ...m, content: m.content + cleanText } : m))
           );
-          await new Promise((r) => setTimeout(r, 20));
         }
       }
 
       incrementUsage();
     } catch (err) {
-      setError("Something went wrong.");
+      setError(err.name === "AbortError" ? "Request timed out." : "Something went wrong.");
     } finally {
       setIsLoading(false);
-      setIsTyping(false);
     }
+  };
+
+  const handleLongPress = (e, message) => {
+    if (e.cancelable) e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    setContextMenu({ visible: true, x: e.clientX || rect.left, y: e.clientY || rect.top, messageId: message.id, content: message.content });
+  };
+
+  const copyToClipboard = (text) => {
+    navigator.clipboard.writeText(text);
+    setContextMenu(null);
+  };
+
+  const deleteMessage = (id) => {
+    setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, deleted: true } : m)));
+    setContextMenu(null);
   };
 
   return (
@@ -194,7 +214,6 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
             <div className={cn("inline-flex p-6 rounded-full bg-white/5", selectedService.color)}>
               {(() => { const Icon = selectedService.icon; return <Icon className="w-16 h-16" />; })()}
             </div>
-
             <h2 className="text-3xl font-bold">{selectedService.name}</h2>
 
             <div className="flex flex-col gap-6">
@@ -219,10 +238,15 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
               placeholder="Describe emergency..."
               className="w-full p-4 bg-white/5 rounded-xl"
               disabled={isLoading}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSend();
+                }
+              }}
             />
-
             <button
-              onClick={handleSend}
+              onClick={() => handleSend()}
               disabled={isLoading || !input.trim()}
               className="p-3 bg-white text-black rounded-xl disabled:opacity-50"
             >
@@ -232,23 +256,32 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
             {error && (
               <div className="text-red-400 flex items-center gap-2">
                 {error}
-                <button onClick={handleSend}><RefreshCw /></button>
+                <button onClick={() => {
+                  const lastUserMsg = [...messages].reverse().find(m => m.role === "user");
+                  if (lastUserMsg) handleSend(lastUserMsg.content);
+                  else handleSend();
+                }}><RefreshCw /></button>
               </div>
             )}
 
-            {messages
-              .filter((m) => m.role === "assistant")
-              .map((m) => (
-                <div key={m.id} className="prose prose-invert">
-                  <Markdown>{m.content}</Markdown>
-                </div>
-              ))}
+            {messages.map((msg) => (
+              <div key={msg.id} className="prose prose-invert">
+                {msg.deleted ? (
+                  "Message deleted"
+                ) : msg.isNew ? (
+                  <TypingText
+                    text={msg.content}
+                    onComplete={() => setMessages((prev) =>
+                      prev.map((m) => (m.id === msg.id ? { ...m, isNew: false } : m))
+                    )}
+                  />
+                ) : (
+                  <Markdown>{msg.content}</Markdown>
+                )}
+              </div>
+            ))}
 
-            {isTyping && (
-              <div className="prose prose-invert text-gray-400 italic">Assistant is typing...</div>
-            )}
-
-            <div ref={chatEndRef} />
+            <div ref={messagesEndRef} />
           </div>
         </>
       ) : (
@@ -268,6 +301,33 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
           })}
         </div>
       )}
+
+      <AnimatePresence>
+        {contextMenu && (
+          <>
+            <div className="fixed inset-0 z-[100]" onClick={() => setContextMenu(null)} />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 10 }}
+              style={{
+                position: "fixed",
+                left: Math.min(window.innerWidth - 150, contextMenu.x),
+                top: Math.min(window.innerHeight - 100, contextMenu.y),
+                zIndex: 101,
+              }}
+              className="bg-zinc-900 border border-white/10 rounded-xl p-1 shadow-2xl min-w-[140px]"
+            >
+              <button onClick={() => copyToClipboard(contextMenu.content)} className="w-full flex items-center gap-3 px-3 py-2 text-xs font-bold text-white hover:bg-white/10 rounded-lg transition-colors">
+                COPY
+              </button>
+              <button onClick={() => deleteMessage(contextMenu.messageId)} className="w-full flex items-center gap-3 px-3 py-2 text-xs font-bold text-red-400 hover:bg-red-400/10 rounded-lg transition-colors">
+                DELETE
+              </button>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
-              }
+    }
