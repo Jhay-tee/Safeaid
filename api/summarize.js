@@ -30,6 +30,7 @@ function extractTextFromChunk(chunk) {
         .join("");
     }
   }
+
   return typeof text === "string" ? text : "";
 }
 
@@ -50,37 +51,41 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   try {
-    // ✅ Handle single file upload
     await runMiddleware(req, res, upload.single("image"));
 
     const ai = getGenAI();
     const primaryModel = "gemini-2.5-flash";
-    const fallbackModel = "gemini-2.5-flash-lite"; // fallback for rate limit
+    const fallbackModel = "gemini-2.5-flash-lite";
 
-    // ✅ Build system prompt
-    const systemPrompt = `You are SafeAid Summarizer. 
-Summarize medical documents clearly and simply for a layperson. 
-Avoid complex medical terms; provide nearest explanation in brackets if unavoidable. 
+    const systemPrompt = `You are SafeAid Summarizer.
+Summarize medical documents clearly and simply for a layperson.
+Avoid complex medical terms; provide nearest explanation in brackets if unavoidable.
 Be calm, professional, and concise.`;
 
-    // ✅ Determine user content (image or text)
     let userContentPart;
+
     if (req.file) {
-      const imageBase64 = req.file.buffer.toString("base64");
+      // ✅ Correct Gemini structure for image
       userContentPart = {
         data: {
-          data: imageBase64,
-          mimeType: req.file.mimetype,
+          image: {
+            imageBytes: req.file.buffer.toString("base64"),
+            mimeType: req.file.mimetype,
+          },
         },
       };
     } else if (req.body.textToSummarize) {
+      // ✅ Text input
       userContentPart = { text: req.body.textToSummarize };
     } else {
-      throw new Error("No input provided");
+      throw new Error("No input provided. Upload an image or provide text.");
     }
 
-    // SSE setup
-    res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
 
     let model = ai.getGenerativeModel({ model: primaryModel });
     let result;
@@ -89,14 +94,13 @@ Be calm, professional, and concise.`;
       result = await model.generateContentStream({
         contents: [
           { role: "MODEL", parts: [{ text: systemPrompt }] },
-          { role: "USER", parts: [userContentPart] },
+          { role: "USER", parts: [userContentPart] }, // ✅ fixed
         ],
       });
     } catch (err) {
       if ((err.status || err.statusCode) === 429) {
-        // fallback model
         model = ai.getGenerativeModel({ model: fallbackModel });
-        res.write(`data: ${JSON.stringify({ info: "Now using 2.5 Flash Lite as fallback" })}\n\n`);
+        res.write(`data: ${JSON.stringify({ info: "Using 2.5 Flash Lite fallback" })}\n\n`);
         result = await model.generateContentStream({
           contents: [
             { role: "MODEL", parts: [{ text: systemPrompt }] },
@@ -125,6 +129,7 @@ Be calm, professional, and concise.`;
       res.end();
       return;
     }
+
     res.status(httpStatus >= 400 && httpStatus < 600 ? httpStatus : 500).json({ error: errorMsg });
   }
-}
+  }
