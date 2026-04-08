@@ -50,7 +50,7 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   try {
-    await runMiddleware(req, res, upload.single("file")); // keep your file logic
+    await runMiddleware(req, res, upload.single("image")); // keep your file logic
 
     const ai = getGenAI();
     const primaryModel = "gemini-2.5-flash";
