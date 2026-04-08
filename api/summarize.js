@@ -6,9 +6,11 @@ let genAI = null;
 function getGenAI() {
   if (!genAI) {
     const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey || apiKey.includes("YOUR_API_KEY") || apiKey.includes("MY_GEMINI_API_KEY")) {
-      throw new Error("GEMINI_API_KEY is missing or invalid.");
+
+    if (!apiKey) {
+      throw new Error("Missing GEMINI_API_KEY");
     }
+
     genAI = new GoogleGenerativeAI(apiKey);
   }
   return genAI;
@@ -16,71 +18,83 @@ function getGenAI() {
 
 function extractTextFromChunk(chunk) {
   let text = "";
+
   try {
-    if (typeof chunk.text === "function") text = chunk.text() || "";
-    else if (typeof chunk.text === "string") text = chunk.text;
+    if (typeof chunk.text === "function") {
+      text = chunk.text() || "";
+    } else if (typeof chunk.text === "string") {
+      text = chunk.text;
+    }
   } catch (_) {}
 
-  if (!text && chunk.candidates && chunk.candidates.length > 0) {
-    const candidate = chunk.candidates[0];
-    if (candidate.content && candidate.content.parts) {
-      text = candidate.content.parts
-        .filter((p) => !p.thought)
-        .map((p) => (typeof p.text === "string" ? p.text : ""))
-        .join("");
-    }
+  if (!text && chunk.candidates?.length) {
+    const parts = chunk.candidates[0]?.content?.parts || [];
+    text = parts.map((p) => p.text || "").join("");
   }
 
-  return typeof text === "string" ? text : "";
+  return text || "";
 }
 
 function buildErrorMessage(status, message) {
-  if (status === 429) return message ? `Rate limited: ${message}` : "Too many requests.";
+  if (status === 429) return "Too many requests. Please try again.";
   if (status === 503) return "Gemini API busy. Try again later.";
-  if (status === 404) return "AI model not found. Check model name.";
-  return message || "Failed to get a response from the AI.";
+  if (status === 404) return "Model not found.";
+  return message || "Failed to get response.";
 }
 
 const upload = multer({ storage: multer.memoryStorage() });
+
 const runMiddleware = (req, res, fn) =>
   new Promise((resolve, reject) => {
-    fn(req, res, (result) => (result instanceof Error ? reject(result) : resolve(result)));
+    fn(req, res, (result) =>
+      result instanceof Error ? reject(result) : resolve(result)
+    );
   });
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
 
   try {
     await runMiddleware(req, res, upload.single("image"));
 
     const ai = getGenAI();
+
     const primaryModel = "gemini-2.5-flash";
     const fallbackModel = "gemini-2.5-flash-lite";
 
     const systemPrompt = `You are SafeAid Summarizer.
 Summarize medical documents clearly and simply for a layperson.
-Avoid complex medical terms; provide nearest explanation in brackets if unavoidable.
+Avoid complex medical terms; explain briefly if needed.
 Be calm, professional, and concise.`;
 
-    let userContentPart;
+    // ✅ BUILD PARTS CORRECTLY
+    const parts = [{ text: systemPrompt }];
 
     if (req.file) {
-      // ✅ Correct Gemini structure for image
-      userContentPart = {
-        data: {
-          image: {
-            imageBytes: req.file.buffer.toString("base64"),
-            mimeType: req.file.mimetype,
-          },
+      parts.push({
+        inlineData: {
+          mimeType: req.file.mimetype,
+          data: req.file.buffer.toString("base64"),
         },
-      };
+      });
     } else if (req.body.textToSummarize) {
-      // ✅ Text input
-      userContentPart = { text: req.body.textToSummarize };
+      parts.push({
+        text: req.body.textToSummarize,
+      });
     } else {
-      throw new Error("No input provided. Upload an image or provide text.");
+      throw new Error("No input provided.");
     }
 
+    const contents = [
+      {
+        role: "user",
+        parts,
+      },
+    ];
+
+    // ✅ SSE setup
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
@@ -91,38 +105,42 @@ Be calm, professional, and concise.`;
     let result;
 
     try {
-      result = await model.generateContentStream({
-        contents: [
-          { role: "MODEL", parts: [{ text: systemPrompt }] },
-          { role: "USER", parts: [userContentPart] }, // ✅ fixed
-        ],
-      });
+      // 🔥 PRIMARY MODEL
+      result = await model.generateContentStream({ contents });
     } catch (err) {
-      if ((err.status || err.statusCode) === 429) {
+      const status = err.status || err.statusCode;
+
+      if (status === 429) {
+        // 🔥 FALLBACK MODEL
         model = ai.getGenerativeModel({ model: fallbackModel });
-        res.write(`data: ${JSON.stringify({ info: "Using 2.5 Flash Lite fallback" })}\n\n`);
-        result = await model.generateContentStream({
-          contents: [
-            { role: "MODEL", parts: [{ text: systemPrompt }] },
-            { role: "USER", parts: [userContentPart] },
-          ],
-        });
+
+        res.write(
+          `data: ${JSON.stringify({
+            info: "Switched to Flash Lite (fallback)",
+          })}\n\n`
+        );
+
+        result = await model.generateContentStream({ contents });
       } else {
         throw err;
       }
     }
 
+    // ✅ STREAM RESPONSE
     for await (const chunk of result.stream) {
       const text = extractTextFromChunk(chunk);
-      if (text && text.trim()) res.write(`data: ${JSON.stringify({ text })}\n\n`);
+
+      if (text.trim()) {
+        res.write(`data: ${JSON.stringify({ text })}\n\n`);
+      }
     }
 
     res.end();
   } catch (error) {
-    console.error("Streaming Error:", error.status || error.statusCode || "?", error.message || "no message");
-    const httpStatus = error.status || error.httpStatus || error.statusCode || 500;
-    const apiMessage = error.message || "";
-    const errorMsg = buildErrorMessage(httpStatus, apiMessage);
+    console.error("Error:", error);
+
+    const status = error.status || error.statusCode || 500;
+    const errorMsg = buildErrorMessage(status, error.message);
 
     if (res.headersSent) {
       res.write(`data: ${JSON.stringify({ error: errorMsg })}\n\n`);
@@ -130,6 +148,6 @@ Be calm, professional, and concise.`;
       return;
     }
 
-    res.status(httpStatus >= 400 && httpStatus < 600 ? httpStatus : 500).json({ error: errorMsg });
+    res.status(status).json({ error: errorMsg });
   }
   }
