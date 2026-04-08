@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Send, Loader2, RefreshCw, Heart, Shield, Activity, Copy, Trash2, MoreVertical } from "lucide-react";
+import { Send, Loader2, Heart, Shield, Activity, Copy, Trash2 } from "lucide-react";
 import { cn } from "../lib/utils";
 import Markdown from "react-markdown";
 
@@ -9,26 +9,6 @@ const TYPE_CONFIG = {
   "first-aid": { name: "First Aid Guide", icon: Activity, color: "text-green-500", placeholder: "What's the injury?" },
   emergency: { name: "Emergency AI", icon: Shield, color: "text-red-500", placeholder: "Describe the emergency..." },
 };
-
-// Fast typing effect component
-function TypingText({ text, speed = 10, onComplete }) {
-  const [displayedText, setDisplayedText] = useState("");
-  const [currentIndex, setCurrentIndex] = useState(0);
-
-  useEffect(() => {
-    if (currentIndex < text.length) {
-      const timeout = setTimeout(() => {
-        setDisplayedText((prev) => prev + text[currentIndex]);
-        setCurrentIndex((prev) => prev + 1);
-      }, speed);
-      return () => clearTimeout(timeout);
-    } else if (onComplete) {
-      onComplete();
-    }
-  }, [currentIndex, text, speed, onComplete]);
-
-  return <Markdown>{displayedText}</Markdown>;
-}
 
 export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
   const [input, setInput] = useState("");
@@ -43,12 +23,10 @@ export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
   const messagesEndRef = useRef(null);
   const config = TYPE_CONFIG[type];
 
-  // Persistence
   useEffect(() => {
     localStorage.setItem(`safeaid_chat_${type}`, JSON.stringify(messages));
   }, [messages, type]);
 
-  // Scroll to bottom
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, []);
@@ -56,52 +34,39 @@ export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
   useEffect(() => {
     scrollToBottom();
   }, [messages, isLoading, scrollToBottom]);
-const handleSend = async (retryInput) => {
-  const textToUse = retryInput || input;
-  if (!textToUse.trim() || isLoading) return;
 
-  // Cooldown check (2 seconds)
-  const now = Date.now();
-  if (now - lastRequestTime < 2000) {
-    setError("Please wait a moment before sending another message.");
-    return;
-  }
-  setLastRequestTime(now);
+  const handleSend = async (retryInput) => {
+    const textToUse = retryInput || input;
+    if (!textToUse.trim() || isLoading) return;
 
-  if (isLimitReached) {
-    setError("You've reached your limit. Please sign in to continue.");
-    return;
-  }
+    const now = Date.now();
+    if (now - lastRequestTime < 2000) {
+      setError("Please wait a moment before sending another message.");
+      return;
+    }
+    setLastRequestTime(now);
 
-  if (!retryInput) {
-    const userMessage = {
-      id: Date.now().toString(),
-      role: "user",
-      content: textToUse,
-      timestamp: new Date().toISOString(),
-    };
-    setMessages((prev) => [...prev, userMessage]);
-    setInput("");
-  }
+    if (isLimitReached) {
+      setError("You've reached your limit. Please sign in to continue.");
+      return;
+    }
 
-  setIsLoading(true);
-  setError(null);
+    if (!retryInput) {
+      const userMessage = {
+        id: Date.now().toString(),
+        role: "user",
+        content: textToUse,
+        timestamp: new Date().toISOString(),
+      };
+      setMessages((prev) => [...prev, userMessage]);
+      setInput("");
+    }
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 20000);
+    setIsLoading(true);
+    setError(null);
 
-  try {
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: textToUse, type }),
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeoutId);
-
-    // Create one assistant message placeholder
     const aiMessageId = (Date.now() + 1).toString();
+
     setMessages((prev) => [
       ...prev,
       {
@@ -109,91 +74,126 @@ const handleSend = async (retryInput) => {
         role: "assistant",
         content: "",
         timestamp: new Date().toISOString(),
-        isNew: true,
       },
     ]);
 
-    // Streaming reader
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder("utf-8");
-    let buffer = "";
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: textToUse, type }),
+        signal: controller.signal,
+      });
 
-      buffer += decoder.decode(value, { stream: true });
-      const parts = buffer.split("\n\n");
-      buffer = parts.pop(); // keep incomplete chunk
+      clearTimeout(timeoutId);
 
-      for (const part of parts) {
-        if (!part.startsWith("data:")) continue;
-
+      if (!res.ok) {
+        let errMsg = `Server error (${res.status})`;
         try {
-          const jsonStr = part.replace(/^data:\s*/, "");
-          const parsed = JSON.parse(jsonStr);
+          const errData = await res.json();
+          errMsg = errData.error || errMsg;
+        } catch (_) {}
+        setMessages((prev) => prev.filter((m) => m.id !== aiMessageId));
+        setError(errMsg);
+        setIsLoading(false);
+        return;
+      }
 
-          // Safely capture text from multiple possible fields
-          let text =
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let buffer = "";
+      let receivedContent = false;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop();
+
+        for (const part of parts) {
+          if (!part.startsWith("data:")) continue;
+
+          const jsonStr = part.replace(/^data:\s*/, "").trim();
+          if (jsonStr === "[DONE]") continue;
+
+          let parsed;
+          try {
+            parsed = JSON.parse(jsonStr);
+          } catch (_) {
+            continue;
+          }
+
+          if (parsed.error) {
+            setMessages((prev) => prev.filter((m) => m.id !== aiMessageId));
+            setError(parsed.error);
+            setIsLoading(false);
+            return;
+          }
+
+          const text =
             parsed.text ||
-            (parsed.candidates &&
-              parsed.candidates[0]?.content?.parts?.[0]?.text) ||
+            parsed.candidates?.[0]?.content?.parts?.[0]?.text ||
             "";
 
           if (!text || !text.trim()) continue;
 
-          // Emergency trigger check
           const triggerMatch = text.match(/\[TRIGGER_EMERGENCY:(\w+)\]/i);
           let cleanText = text;
           if (triggerMatch) {
-            const service = triggerMatch[1].toLowerCase();
             cleanText = text.replace(triggerMatch[0], "").trim();
             window.dispatchEvent(
-              new CustomEvent("trigger-emergency", { detail: { service } })
+              new CustomEvent("trigger-emergency", { detail: { service: triggerMatch[1].toLowerCase() } })
             );
           }
 
-          // Update the single assistant message progressively
+          receivedContent = true;
           setMessages((prev) =>
             prev.map((m) =>
-              m.id === aiMessageId
-                ? { ...m, content: m.content + cleanText }
-                : m
+              m.id === aiMessageId ? { ...m, content: m.content + cleanText } : m
             )
           );
-        } catch (err) {
-          console.warn("Skipping invalid JSON chunk:", part);
         }
       }
+
+      if (!receivedContent) {
+        setMessages((prev) => prev.filter((m) => m.id !== aiMessageId));
+        setError("No response received. Please try again.");
+        setIsLoading(false);
+        return;
+      }
+
+      incrementUsage();
+    } catch (err) {
+      clearTimeout(timeoutId);
+      setMessages((prev) => prev.filter((m) => m.id !== aiMessageId));
+      if (err.name === "AbortError") {
+        setError("Request timed out. Please try again.");
+      } else {
+        setError(err.message || "Connection failed. Please check your internet and try again.");
+      }
+    } finally {
+      setIsLoading(false);
     }
+  };
 
-    incrementUsage();
-  } catch (err) {
-    console.error("Chat Error:", err);
-    setError(err.name === "AbortError" ? "Request timed out." : err.message);
-  } finally {
-    setIsLoading(false);
-  }
-};
-
-const handleLongPress = (e, message) => {
-  if (e.cancelable) {
-    e.preventDefault();
-  }
-
-  const target = e.currentTarget;
-  if (!target) return; // avoid null errors
-
-  const rect = target.getBoundingClientRect();
-  setContextMenu({
-    visible: true,
-    x: e.clientX || (rect.left + rect.width / 2),
-    y: e.clientY || rect.top,
-    messageId: message.id,
-    content: message.content,
-  });
-};
-
+  const handleLongPress = (e, message) => {
+    if (e.cancelable) e.preventDefault();
+    const target = e.currentTarget;
+    if (!target) return;
+    const rect = target.getBoundingClientRect();
+    setContextMenu({
+      visible: true,
+      x: e.clientX || rect.left + rect.width / 2,
+      y: e.clientY || rect.top,
+      messageId: message.id,
+      content: message.content,
+    });
+  };
 
   const copyToClipboard = (text) => {
     navigator.clipboard.writeText(text);
@@ -201,7 +201,7 @@ const handleLongPress = (e, message) => {
   };
 
   const deleteMessage = (id) => {
-    setMessages(prev => prev.map(m => m.id === id ? { ...m, deleted: true } : m));
+    setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, deleted: true } : m)));
     setContextMenu(null);
   };
 
@@ -213,7 +213,6 @@ const handleLongPress = (e, message) => {
 
   return (
     <div className="flex flex-col h-full max-h-[80vh]">
-      {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-4">
           <div className={cn("p-3 rounded-xl bg-white/5", config.color)}>
@@ -222,7 +221,7 @@ const handleLongPress = (e, message) => {
           <h2 className="text-xl lg:text-2xl font-bold tracking-tight">{config.name}</h2>
         </div>
         {messages.length > 0 && (
-          <button 
+          <button
             onClick={clearHistory}
             className="text-[10px] font-bold text-white/20 hover:text-white/40 uppercase tracking-widest transition-colors"
           >
@@ -231,8 +230,7 @@ const handleLongPress = (e, message) => {
         )}
       </div>
 
-      {/* Messages Area */}
-  <div className="flex-1 overflow-y-auto space-y-4 lg:space-y-6 mb-6 pr-2 lg:pr-6 custom-scrollbar">
+      <div className="flex-1 overflow-y-auto space-y-4 lg:space-y-6 mb-6 pr-2 lg:pr-6 custom-scrollbar">
         {messages.length === 0 && !isLoading && (
           <div className="flex flex-col items-center justify-center py-12 lg:py-16 text-center opacity-20">
             <config.icon className="w-12 h-12 lg:w-16 lg:h-16 mb-4" />
@@ -259,27 +257,26 @@ const handleLongPress = (e, message) => {
             <div
               className={cn(
                 "p-4 rounded-2xl text-sm md:text-base lg:text-lg lg:p-6 transition-all",
-                msg.role === "user" 
-                  ? "bg-white text-black font-medium rounded-tr-none" 
+                msg.role === "user"
+                  ? "bg-white text-black font-medium rounded-tr-none"
                   : "bg-white/5 border border-white/10 text-white rounded-tl-none",
                 msg.deleted && "opacity-40 italic bg-transparent border-dashed"
               )}
             >
               {msg.deleted ? (
                 "Message was deleted"
-              ) : (
-                msg.role === "assistant" && msg.isNew ? (
-                  <TypingText 
-                    text={msg.content} 
-                    onComplete={() => {
-                      setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, isNew: false } : m));
-                    }} 
-                  />
-                ) : (
+              ) : msg.role === "assistant" ? (
+                msg.content ? (
                   <div className="prose prose-invert prose-sm lg:prose lg:prose-lg max-w-none">
                     <Markdown>{msg.content}</Markdown>
                   </div>
+                ) : (
+                  <span className="opacity-40 text-xs uppercase tracking-widest animate-pulse">Waiting...</span>
                 )
+              ) : (
+                <div className="prose prose-sm max-w-none">
+                  <Markdown>{msg.content}</Markdown>
+                </div>
               )}
             </div>
             <span className="text-[10px] lg:text-xs text-white/20 mt-1 uppercase tracking-tighter">
@@ -287,7 +284,7 @@ const handleLongPress = (e, message) => {
             </span>
           </motion.div>
         ))}
-        
+
         {isLoading && (
           <motion.div
             initial={{ opacity: 0 }}
@@ -300,24 +297,28 @@ const handleLongPress = (e, message) => {
         )}
 
         {error && (
-          <div className="p-4 lg:p-6 bg-red-500/10 border border-red-500/20 rounded-2xl text-xs lg:text-sm text-red-400 font-medium flex items-center justify-between gap-4">
+          <motion.div
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="p-4 lg:p-6 bg-red-500/10 border border-red-500/20 rounded-2xl text-xs lg:text-sm text-red-400 font-medium flex items-center justify-between gap-4"
+          >
             <span>{error}</span>
-            <button 
+            <button
               onClick={() => {
-                const lastUserMsg = [...messages].reverse().find(m => m.role === "user");
+                setError(null);
+                const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
                 if (lastUserMsg) handleSend(lastUserMsg.content);
-                else handleSend();
-              }} 
+              }}
               className="px-3 py-1 bg-red-500/20 rounded-lg hover:bg-red-500/30 transition-colors shrink-0 font-bold uppercase tracking-tighter"
             >
               Retry
             </button>
-          </div>
+          </motion.div>
         )}
+
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input Area */}
       <div className="relative">
         <textarea
           value={input}
@@ -341,23 +342,19 @@ const handleLongPress = (e, message) => {
         </button>
       </div>
 
-      {/* Context Menu Overlay */}
       <AnimatePresence>
         {contextMenu && (
           <>
-            <div 
-              className="fixed inset-0 z-[100]" 
-              onClick={() => setContextMenu(null)}
-            />
+            <div className="fixed inset-0 z-[100]" onClick={() => setContextMenu(null)} />
             <motion.div
               initial={{ opacity: 0, scale: 0.9, y: 10 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.9, y: 10 }}
-              style={{ 
-                position: "fixed", 
-                left: Math.min(window.innerWidth - 150, contextMenu.x), 
+              style={{
+                position: "fixed",
+                left: Math.min(window.innerWidth - 150, contextMenu.x),
                 top: Math.min(window.innerHeight - 100, contextMenu.y),
-                zIndex: 101
+                zIndex: 101,
               }}
               className="bg-zinc-900 border border-white/10 rounded-xl p-1 shadow-2xl min-w-[140px]"
             >
@@ -382,3 +379,4 @@ const handleLongPress = (e, message) => {
     </div>
   );
 }
+
