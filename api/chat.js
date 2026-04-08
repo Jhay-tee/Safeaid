@@ -5,11 +5,7 @@ let genAI = null;
 function getGenAI() {
   if (!genAI) {
     const apiKey = process.env.GEMINI_API_KEY;
-    if (
-      !apiKey ||
-      apiKey.includes("YOUR_API_KEY") ||
-      apiKey.includes("MY_GEMINI_API_KEY")
-    ) {
+    if (!apiKey || apiKey.includes("YOUR_API_KEY") || apiKey.includes("MY_GEMINI_API_KEY")) {
       throw new Error(
         "GEMINI_API_KEY is missing or invalid. Please add it in your environment settings."
       );
@@ -52,7 +48,7 @@ export default async function handler(req, res) {
     const { message, type } = req.body;
     const ai = getGenAI();
 
-    // ✅ FIX 1: Proper system + user separation (NO injection issue)
+    // ✅ SYSTEM PROMPT
     const systemPrompt = `You are SafeAid, a professional, highly accurate AI emergency and health assistant for Uyo community.
     
 CRITICAL INSTRUCTIONS:
@@ -71,26 +67,39 @@ Current Mode: ${type === "emergency" ? "CRITICAL EMERGENCY" : "Health Inquiry"}`
       Connection: "keep-alive",
     });
 
-    // ✅ FIX 2: Model fallback (2.5 → 1.5)
-    let model = ai.getGenerativeModel({ model: "gemini-2.5-flash" });
+    // ✅ MODEL SELECTION
+    let modelName = "gemini-2.5-flash";       // primary
+    let fallbackName = "gemini-2.5-flash-lite"; // fallback
 
+    let model = ai.getGenerativeModel({ model: modelName });
     let result;
 
     try {
+      // Detect role type depending on model
+      const roleSystem = modelName === fallbackName ? "MODEL" : "system";
+      const roleUser = modelName === fallbackName ? "USER" : "user";
+
       result = await model.generateContentStream({
         contents: [
-          { role: "system", parts: [{ text: systemPrompt }] }, // ✅ FIXED
-          { role: "user", parts: [{ text: message }] },        // ✅ FIXED
+          { role: roleSystem, parts: [{ text: systemPrompt }] },
+          { role: roleUser, parts: [{ text: message }] },
         ],
       });
     } catch (err) {
+      // Fallback only on 429 (rate limit)
       if ((err.status || err.statusCode) === 429) {
-        const fallbackModel = ai.getGenerativeModel({ model: "gemini-2.5-flash-lite" });
+        model = ai.getGenerativeModel({ model: fallbackName });
 
-        result = await fallbackModel.generateContentStream({
+        const roleSystem = "MODEL";
+        const roleUser = "USER";
+
+        // Optional: send temporary notification to front-end
+        res.write(`data: ${JSON.stringify({ info: "Fallback: using 2.5 Flash Lite model" })}\n\n`);
+
+        result = await model.generateContentStream({
           contents: [
-            { role: "system", parts: [{ text: systemPrompt }] }, // ✅ FIXED
-            { role: "user", parts: [{ text: message }] },        // ✅ FIXED
+            { role: roleSystem, parts: [{ text: systemPrompt }] },
+            { role: roleUser, parts: [{ text: message }] },
           ],
         });
       } else {
@@ -98,6 +107,7 @@ Current Mode: ${type === "emergency" ? "CRITICAL EMERGENCY" : "Health Inquiry"}`
       }
     }
 
+    // Stream AI chunks
     for await (const chunk of result.stream) {
       const text = extractTextFromChunk(chunk);
       if (text && text.trim()) {
@@ -139,8 +149,6 @@ Current Mode: ${type === "emergency" ? "CRITICAL EMERGENCY" : "Health Inquiry"}`
       return;
     }
 
-    res
-      .status(httpStatus >= 400 && httpStatus < 600 ? httpStatus : 500)
-      .json({ error: errorMsg });
+    res.status(httpStatus >= 400 && httpStatus < 600 ? httpStatus : 500).json({ error: errorMsg });
   }
   }
