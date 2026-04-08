@@ -50,19 +50,34 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   try {
-    await runMiddleware(req, res, upload.single("image")); // keep your file logic
+    // ✅ Handle single file upload
+    await runMiddleware(req, res, upload.single("image"));
 
     const ai = getGenAI();
     const primaryModel = "gemini-2.5-flash";
     const fallbackModel = "gemini-2.5-flash-lite"; // fallback for rate limit
 
-    const { textToSummarize } = req.body; // assuming you have this from client
-
-    // ✅ System prompt separated from user prompt
+    // ✅ Build system prompt
     const systemPrompt = `You are SafeAid Summarizer. 
 Summarize medical documents clearly and simply for a layperson. 
 Avoid complex medical terms; provide nearest explanation in brackets if unavoidable. 
 Be calm, professional, and concise.`;
+
+    // ✅ Determine user content (image or text)
+    let userContentPart;
+    if (req.file) {
+      const imageBase64 = req.file.buffer.toString("base64");
+      userContentPart = {
+        data: {
+          data: imageBase64,
+          mimeType: req.file.mimetype,
+        },
+      };
+    } else if (req.body.textToSummarize) {
+      userContentPart = { text: req.body.textToSummarize };
+    } else {
+      throw new Error("No input provided");
+    }
 
     // SSE setup
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
@@ -74,7 +89,7 @@ Be calm, professional, and concise.`;
       result = await model.generateContentStream({
         contents: [
           { role: "MODEL", parts: [{ text: systemPrompt }] },
-          { role: "USER", parts: [{ text: textToSummarize }] },
+          { role: "USER", parts: [userContentPart] },
         ],
       });
     } catch (err) {
@@ -85,7 +100,7 @@ Be calm, professional, and concise.`;
         result = await model.generateContentStream({
           contents: [
             { role: "MODEL", parts: [{ text: systemPrompt }] },
-            { role: "USER", parts: [{ text: textToSummarize }] },
+            { role: "USER", parts: [userContentPart] },
           ],
         });
       } else {
@@ -112,4 +127,4 @@ Be calm, professional, and concise.`;
     }
     res.status(httpStatus >= 400 && httpStatus < 600 ? httpStatus : 500).json({ error: errorMsg });
   }
-      }
+}
