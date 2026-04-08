@@ -191,10 +191,16 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
     setContextMenu(null);
   };
 
+  // **Fixed back button handler**
+  const handleBack = () => {
+    if (selectedService) setSelectedService(null);
+    else onBack();
+  };
+
   return (
     <motion.div className="space-y-8">
       <button
-        onClick={() => (selectedService ? setSelectedService(null) : onBack())}
+        onClick={handleBack}
         className="flex items-center gap-2 text-white/40 hover:text-white"
       >
         <ArrowLeft className="w-4 h-4" />
@@ -332,4 +338,4 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
       </AnimatePresence>
     </motion.div>
   );
-  }
+    }
