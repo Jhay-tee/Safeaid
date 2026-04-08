@@ -25,7 +25,7 @@ export default defineConfig(({ mode }) => {
           orientation: "portrait",
           icons: [
             {
-              src: "/icons/safeaid.png",
+              src: "/icons/image.png",
               sizes: "192x192",
               type: "image/png",
               purpose: "any maskable",
