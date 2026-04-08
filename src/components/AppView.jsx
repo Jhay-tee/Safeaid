@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 import { ArrowLeft, Activity, Heart, Shield, FileText, ChevronRight } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -12,8 +13,9 @@ const TOOLS = [
   { id: "summarizer", name: "Medical Record Summarizer", icon: FileText, color: "text-blue-500", desc: "Upload reports for simple summaries" },
 ];
 
-export default function AppView({ onBack, incrementUsage, isLimitReached, isAuth }) {
+export default function AppView({ incrementUsage, isLimitReached, isAuth }) {
   const [selectedTool, setSelectedTool] = useState(null);
+  const navigate = useNavigate(); // React Router
 
   return (
     <motion.div
@@ -21,7 +23,10 @@ export default function AppView({ onBack, incrementUsage, isLimitReached, isAuth
       animate={{ opacity: 1, x: 0 }}
       className="space-y-8"
     >
-      <button onClick={onBack} className="flex items-center gap-2 text-white/40 hover:text-white transition-colors">
+      <button
+        onClick={() => navigate(-1)} // Fixed back button
+        className="flex items-center gap-2 text-white/40 hover:text-white transition-colors"
+      >
         <ArrowLeft className="w-4 h-4" />
         Back to Home
       </button>
@@ -76,21 +81,24 @@ export default function AppView({ onBack, incrementUsage, isLimitReached, isAuth
             exit={{ opacity: 0, scale: 0.98 }}
             className="space-y-6"
           >
-            <button onClick={() => setSelectedTool(null)} className="flex items-center gap-2 text-white/40 hover:text-white transition-colors">
+            <button
+              onClick={() => setSelectedTool(null)}
+              className="flex items-center gap-2 text-white/40 hover:text-white transition-colors"
+            >
               <ArrowLeft className="w-4 h-4" />
               Back to Tools
             </button>
 
             {selectedTool === "summarizer" ? (
-              <MedicalSummarizer 
-                incrementUsage={incrementUsage} 
-                isLimitReached={isLimitReached} 
+              <MedicalSummarizer
+                incrementUsage={incrementUsage}
+                isLimitReached={isLimitReached}
               />
             ) : (
-              <AIAssistant 
-                type={selectedTool} 
-                incrementUsage={incrementUsage} 
-                isLimitReached={isLimitReached} 
+              <AIAssistant
+                type={selectedTool}
+                incrementUsage={incrementUsage}
+                isLimitReached={isLimitReached}
               />
             )}
           </motion.div>
@@ -98,4 +106,4 @@ export default function AppView({ onBack, incrementUsage, isLimitReached, isAuth
       </AnimatePresence>
     </motion.div>
   );
-}
+   }
