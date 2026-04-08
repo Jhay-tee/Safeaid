@@ -204,9 +204,9 @@ const handleLongPress = (e, message) => {
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-4">
           <div className={cn("p-3 rounded-xl bg-white/5", config.color)}>
-            <config.icon className="w-6 h-6" />
+            <config.icon className="w-6 h-6 lg:w-8 lg:h-8" />
           </div>
-          <h2 className="text-xl font-bold tracking-tight">{config.name}</h2>
+          <h2 className="text-xl lg:text-2xl font-bold tracking-tight">{config.name}</h2>
         </div>
         {messages.length > 0 && (
           <button 
@@ -219,11 +219,11 @@ const handleLongPress = (e, message) => {
       </div>
 
       {/* Messages Area */}
-      <div className="flex-1 overflow-y-auto space-y-4 mb-6 pr-2 custom-scrollbar">
+  <div className="flex-1 overflow-y-auto space-y-4 lg:space-y-6 mb-6 pr-2 lg:pr-6 custom-scrollbar">
         {messages.length === 0 && !isLoading && (
-          <div className="flex flex-col items-center justify-center py-12 text-center opacity-20">
-            <config.icon className="w-12 h-12 mb-4" />
-            <p className="text-sm font-medium">No messages yet. Start the conversation.</p>
+          <div className="flex flex-col items-center justify-center py-12 lg:py-16 text-center opacity-20">
+            <config.icon className="w-12 h-12 lg:w-16 lg:h-16 mb-4" />
+            <p className="text-sm lg:text-base font-medium">No messages yet. Start the conversation.</p>
           </div>
         )}
 
@@ -239,13 +239,13 @@ const handleLongPress = (e, message) => {
             }}
             onTouchEnd={(e) => clearTimeout(e.currentTarget.dataset.timer)}
             className={cn(
-              "flex flex-col max-w-[85%] group relative",
+              "flex flex-col max-w-[85%] lg:max-w-[70%] group relative",
               msg.role === "user" ? "ml-auto items-end" : "mr-auto items-start"
             )}
           >
             <div
               className={cn(
-                "p-4 rounded-2xl text-sm md:text-base transition-all",
+                "p-4 rounded-2xl text-sm md:text-base lg:text-lg lg:p-6 transition-all",
                 msg.role === "user" 
                   ? "bg-white text-black font-medium rounded-tr-none" 
                   : "bg-white/5 border border-white/10 text-white rounded-tl-none",
@@ -263,13 +263,13 @@ const handleLongPress = (e, message) => {
                     }} 
                   />
                 ) : (
-                  <div className="prose prose-invert prose-sm max-w-none">
+                  <div className="prose prose-invert prose-sm lg:prose lg:prose-lg max-w-none">
                     <Markdown>{msg.content}</Markdown>
                   </div>
                 )
               )}
             </div>
-            <span className="text-[10px] text-white/20 mt-1 uppercase tracking-tighter">
+            <span className="text-[10px] lg:text-xs text-white/20 mt-1 uppercase tracking-tighter">
               {msg.role === "user" ? "You" : "SafeAid"}
             </span>
           </motion.div>
@@ -279,15 +279,15 @@ const handleLongPress = (e, message) => {
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            className="flex items-center gap-2 text-white/40 text-[10px] font-bold uppercase tracking-widest ml-2"
+            className="flex items-center gap-2 text-white/40 text-[10px] lg:text-sm font-bold uppercase tracking-widest ml-2"
           >
-            <Loader2 className="w-3 h-3 animate-spin" />
+            <Loader2 className="w-3 h-3 lg:w-4 lg:h-4 animate-spin" />
             SafeAid is thinking...
           </motion.div>
         )}
 
         {error && (
-          <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-2xl text-xs text-red-400 font-medium flex items-center justify-between gap-4">
+          <div className="p-4 lg:p-6 bg-red-500/10 border border-red-500/20 rounded-2xl text-xs lg:text-sm text-red-400 font-medium flex items-center justify-between gap-4">
             <span>{error}</span>
             <button 
               onClick={() => {
@@ -316,7 +316,7 @@ const handleLongPress = (e, message) => {
             }
           }}
           placeholder={config.placeholder}
-          className="w-full bg-white/5 border border-white/10 backdrop-blur-md rounded-2xl p-4 pr-16 min-h-[60px] max-h-[120px] focus:outline-none focus:border-white/20 transition-colors resize-none text-sm disabled:opacity-50"
+          className="w-full bg-white/5 border border-white/10 backdrop-blur-md rounded-2xl p-4 pr-16 lg:p-5 min-h-[60px] lg:min-h-[80px] max-h-[120px] lg:max-h-[220px] focus:outline-none focus:border-white/20 transition-colors resize-none text-sm lg:text-base disabled:opacity-50"
           disabled={isLoading}
         />
         <button

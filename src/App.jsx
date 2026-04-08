@@ -18,15 +18,15 @@ function Landing({ deferredPrompt, handleInstallClick }) {
       className="flex flex-col gap-8 items-center justify-center min-h-[60vh] text-center"
     >
       <div className="space-y-4">
-        <h1 className="text-4xl md:text-6xl font-bold tracking-tighter">
+        <h1 className="text-4xl md:text-6xl lg:text-7xl font-bold tracking-tighter">
           Emergency & Health <br />
           <span className="text-white/60">AI Assistant</span>
         </h1>
-        <p className="text-white/40 max-w-md mx-auto">
+        <p className="text-white/40 max-w-md lg:max-w-2xl mx-auto">
           Immediate response for emergencies and intelligent health support when you need it most.
         </p>
         <div className="flex items-center justify-center gap-2 text-[10px] font-bold text-green-500/60 uppercase tracking-widest">
-          <Shield className="w-3 h-3" />
+          <Shield className="w-3 h-3 lg:w-4 lg:h-4" />
           Offline Ready for Emergencies
         </div>
       </div>
@@ -36,27 +36,27 @@ function Landing({ deferredPrompt, handleInstallClick }) {
           initial={{ opacity: 0, scale: 0.9 }}
           animate={{ opacity: 1, scale: 1 }}
           onClick={handleInstallClick}
-          className="px-6 py-3 bg-white/10 border border-white/20 rounded-full text-xs font-bold flex items-center gap-2 hover:bg-white/20 transition-all"
+          className="px-6 py-3 lg:px-8 lg:py-4 bg-white/10 border border-white/20 rounded-full text-xs lg:text-sm font-bold flex items-center gap-2 hover:bg-white/20 transition-all"
         >
-          <Download className="w-4 h-4" />
+          <Download className="w-4 h-4 lg:w-5 lg:h-5" />
           INSTALL FOR OFFLINE ACCESS
         </motion.button>
       )}
 
-      <div className="flex flex-col w-full gap-4 max-w-sm">
+      <div className="flex flex-col w-full gap-4 max-w-sm lg:max-w-xl">
         <button
           onClick={() => navigate("/emergency")}
-          className="w-full py-6 bg-white text-black font-bold text-xl rounded-2xl transition-all active:scale-[0.98] hover:bg-white/90 flex items-center justify-center gap-3"
+          className="w-full py-6 lg:py-8 bg-white text-black font-bold text-xl lg:text-2xl rounded-2xl transition-all active:scale-[0.98] hover:bg-white/90 flex items-center justify-center gap-3"
         >
-          <AlertCircle className="w-6 h-6" />
+          <AlertCircle className="w-6 h-6 lg:w-7 lg:h-7" />
           EMERGENCY
         </button>
         
         <button
           onClick={() => navigate("/app")}
-          className="w-full py-6 bg-white/5 text-white font-bold text-xl rounded-2xl border border-white/10 transition-all active:scale-[0.98] hover:bg-white/10 flex items-center justify-center gap-3"
+          className="w-full py-6 lg:py-8 bg-white/5 text-white font-bold text-xl lg:text-2xl rounded-2xl border border-white/10 transition-all active:scale-[0.98] hover:bg-white/10 flex items-center justify-center gap-3"
         >
-          <Activity className="w-6 h-6" />
+          <Activity className="w-6 h-6 lg:w-7 lg:h-7" />
           ENTER APP
         </button>
       </div>
@@ -145,7 +145,7 @@ export default function App() {
         </AnimatePresence>
 
         {/* Header */}
-        <header className="fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-6 py-4 bg-black/80 backdrop-blur-md border-b border-white/10">
+        <header className="fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-6 lg:px-10 py-4 lg:py-6 bg-black/80 backdrop-blur-md border-b border-white/10">
           <div className="flex items-center gap-2 cursor-pointer" onClick={() => window.location.href = "/"}>
             <Shield className="w-6 h-6 text-white" />
             <span className="text-xl font-bold tracking-tight">SafeAid</span>
@@ -154,9 +154,9 @@ export default function App() {
             {deferredPrompt && (
               <button
                 onClick={handleInstallClick}
-                className="flex items-center gap-2 px-3 py-2 bg-white/10 text-white rounded-full text-[10px] md:text-xs font-bold hover:bg-white/20 transition-all"
+                className="flex items-center gap-2 px-3 py-2 bg-white/10 text-white rounded-full text-[10px] md:text-xs lg:text-sm font-bold hover:bg-white/20 transition-all"
               >
-                <Download className="w-3 h-3 md:w-4 h-4" />
+                <Download className="w-3 h-3 md:w-4 h-4 lg:w-5 lg:h-5" />
                 <span className="hidden xs:inline">INSTALL</span>
                 <span className="inline xs:hidden">APP</span>
               </button>
