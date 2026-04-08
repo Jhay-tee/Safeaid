@@ -85,7 +85,7 @@ Current Mode: ${type === "emergency" ? "CRITICAL EMERGENCY" : "Health Inquiry"}`
       });
     } catch (err) {
       if ((err.status || err.statusCode) === 429) {
-        const fallbackModel = ai.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const fallbackModel = ai.getGenerativeModel({ model: "gemini-2.5-flash-lite" });
 
         result = await fallbackModel.generateContentStream({
           contents: [
