@@ -1,8 +1,26 @@
 import { useState, useRef } from "react";
 import { motion } from "motion/react";
 import { FileText, Upload, X, Loader2, RefreshCw, CheckCircle2, AlertCircle } from "lucide-react";
-import { cn } from "../lib/utils";
 import Markdown from "react-markdown";
+
+function extractText(parsed) {
+  if (!parsed || typeof parsed !== "object") return "";
+
+  if (typeof parsed.text === "string" && parsed.text.trim()) return parsed.text;
+
+  if (Array.isArray(parsed.candidates) && parsed.candidates.length > 0) {
+    const parts = parsed.candidates[0]?.content?.parts;
+    if (Array.isArray(parts)) {
+      const joined = parts
+        .filter((p) => !p.thought)
+        .map((p) => (typeof p.text === "string" ? p.text : ""))
+        .join("");
+      if (joined.trim()) return joined;
+    }
+  }
+
+  return "";
+}
 
 export default function MedicalSummarizer({ incrementUsage, isLimitReached }) {
   const [file, setFile] = useState(null);
@@ -52,7 +70,7 @@ export default function MedicalSummarizer({ incrementUsage, isLimitReached }) {
         let errMsg = `Server error (${res.status})`;
         try {
           const errData = await res.json();
-          errMsg = errData.error || errMsg;
+          errMsg = typeof errData.error === "string" ? errData.error : errMsg;
         } catch (_) {}
         setError(errMsg);
         setIsLoading(false);
@@ -71,13 +89,14 @@ export default function MedicalSummarizer({ incrementUsage, isLimitReached }) {
 
         buffer += decoder.decode(value, { stream: true });
         const parts = buffer.split("\n\n");
-        buffer = parts.pop();
+        buffer = parts.pop() ?? "";
 
         for (const part of parts) {
-          if (!part.startsWith("data:")) continue;
+          const trimmed = part.trim();
+          if (!trimmed.startsWith("data:")) continue;
 
-          const jsonStr = part.replace(/^data:\s*/, "").trim();
-          if (jsonStr === "[DONE]") continue;
+          const jsonStr = trimmed.replace(/^data:\s*/, "").trim();
+          if (!jsonStr || jsonStr === "[DONE]") continue;
 
           let parsed;
           try {
@@ -86,27 +105,23 @@ export default function MedicalSummarizer({ incrementUsage, isLimitReached }) {
             continue;
           }
 
-          if (parsed.error) {
+          if (parsed && typeof parsed.error === "string") {
             setError(parsed.error);
             setIsLoading(false);
             return;
           }
 
-          const text =
-            parsed.text ||
-            parsed.candidates?.[0]?.content?.parts?.[0]?.text ||
-            "";
-
-          if (!text || !text.trim()) continue;
+          const text = extractText(parsed);
+          if (!text) continue;
 
           receivedContent = true;
-          collectedText += text;
+          collectedText = collectedText + text;
           setSummary(collectedText);
         }
       }
 
       if (!receivedContent) {
-        setError("No response received from the server. Please try again.");
+        setError("No summary was returned. Please try again or use a clearer image.");
         setIsLoading(false);
         return;
       }
@@ -246,4 +261,3 @@ export default function MedicalSummarizer({ incrementUsage, isLimitReached }) {
     </div>
   );
 }
-
