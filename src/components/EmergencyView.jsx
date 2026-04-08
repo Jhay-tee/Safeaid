@@ -28,7 +28,6 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
   const [lastRequestTime, setLastRequestTime] = useState(0);
-
   const chatEndRef = useRef(null);
 
   // Listen for emergency triggers
@@ -91,31 +90,52 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
         const chunk = decoder.decode(value || new Uint8Array(), { stream: true });
         buffer += chunk;
 
-        // Gemini sends JSON lines; split on newlines
         const lines = buffer.split("\n");
-        buffer = lines.pop(); // incomplete line
+        buffer = lines.pop(); // keep incomplete line
 
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          let text = line;
+        for (let line of lines) {
+          line = line.trim();
+          if (!line) continue;
 
-          // Parse JSON if possible
+          // Strip "data:" prefix if exists
+          if (line.startsWith("data:")) line = line.slice(5).trim();
+
+          let text = "";
+
           try {
             const json = JSON.parse(line);
-            text = json?.candidates?.[0]?.content?.parts?.[0]?.text || json?.text || line;
-          } catch {}
+
+            // Always pick user-readable text
+            if (json?.text) text = json.text;
+            else if (json?.candidates?.[0]?.content?.parts?.[0]?.text) {
+              text = json.candidates[0].content.parts[0].text;
+            } else if (typeof json === "object") {
+              // Convert any leftover object values to string
+              text = Object.values(json)
+                .map((v) => (typeof v === "string" ? v : JSON.stringify(v)))
+                .join(" ");
+            }
+          } catch {
+            text = line; // fallback for non-JSON lines
+          }
 
           // Handle triggers
           const triggerMatch = text.match(/\[TRIGGER_EMERGENCY:(\w+)\]/i);
           if (triggerMatch) {
             const service = triggerMatch[1].toLowerCase();
-            window.dispatchEvent(new CustomEvent("trigger-emergency", { detail: { service } }));
+            window.dispatchEvent(
+              new CustomEvent("trigger-emergency", { detail: { service } })
+            );
             text = text.replace(triggerMatch[0], "").trim();
           }
 
-          setMessages((prev) =>
-            prev.map((m) => (m.id === aiId ? { ...m, content: m.content + text } : m))
-          );
+          if (text) {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === aiId ? { ...m, content: m.content + text } : m
+              )
+            );
+          }
         }
       }
 
