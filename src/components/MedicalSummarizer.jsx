@@ -16,16 +16,14 @@ export default function MedicalSummarizer({ incrementUsage, isLimitReached }) {
     const selectedFile = e.target.files[0];
     if (selectedFile) {
       if (!selectedFile.type.startsWith("image/")) {
-        setError("Please upload an image file.");
+        setError("Please upload an image file (JPG, PNG, etc.).");
         return;
       }
       setFile(selectedFile);
       setError(null);
       setSummary(null);
       const reader = new FileReader();
-      reader.onloadend = () => {
-        setPreview(reader.result);
-      };
+      reader.onloadend = () => setPreview(reader.result);
       reader.readAsDataURL(selectedFile);
     }
   };
@@ -50,30 +48,67 @@ export default function MedicalSummarizer({ incrementUsage, isLimitReached }) {
         body: formData,
       });
 
-      // ✅ Streaming reader instead of res.json()
+      if (!res.ok) {
+        let errMsg = `Server error (${res.status})`;
+        try {
+          const errData = await res.json();
+          errMsg = errData.error || errMsg;
+        } catch (_) {}
+        setError(errMsg);
+        setIsLoading(false);
+        return;
+      }
+
       const reader = res.body.getReader();
       const decoder = new TextDecoder("utf-8");
       let buffer = "";
       let collectedText = "";
+      let receivedContent = false;
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        buffer += decoder.decode(value, { stream: true });
 
+        buffer += decoder.decode(value, { stream: true });
         const parts = buffer.split("\n\n");
-        buffer = parts.pop(); // keep incomplete chunk
+        buffer = parts.pop();
 
         for (const part of parts) {
-          if (part.startsWith("data:")) {
-            const jsonStr = part.replace("data: ", "");
-            const { text } = JSON.parse(jsonStr);
+          if (!part.startsWith("data:")) continue;
 
-            // Append progressively
-            collectedText += text + " ";
-            setSummary(collectedText.trim());
+          const jsonStr = part.replace(/^data:\s*/, "").trim();
+          if (jsonStr === "[DONE]") continue;
+
+          let parsed;
+          try {
+            parsed = JSON.parse(jsonStr);
+          } catch (_) {
+            continue;
           }
+
+          if (parsed.error) {
+            setError(parsed.error);
+            setIsLoading(false);
+            return;
+          }
+
+          const text =
+            parsed.text ||
+            parsed.candidates?.[0]?.content?.parts?.[0]?.text ||
+            "";
+
+          if (!text || !text.trim()) continue;
+
+          receivedContent = true;
+          collectedText += text;
+          setSummary(collectedText);
         }
+      }
+
+      if (!receivedContent) {
+        setError("No response received from the server. Please try again.");
+        setIsLoading(false);
+        return;
       }
 
       incrementUsage();
@@ -113,6 +148,8 @@ export default function MedicalSummarizer({ incrementUsage, isLimitReached }) {
               const reader = new FileReader();
               reader.onloadend = () => setPreview(reader.result);
               reader.readAsDataURL(droppedFile);
+            } else {
+              setError("Please drop an image file.");
             }
           }}
           className="group relative flex flex-col items-center justify-center w-full py-16 bg-white/5 border-2 border-dashed border-white/10 backdrop-blur-md rounded-3xl hover:border-white/20 transition-all cursor-pointer"
@@ -130,6 +167,7 @@ export default function MedicalSummarizer({ incrementUsage, isLimitReached }) {
           <div className="mt-6 text-center">
             <p className="text-lg font-bold">Upload Medical Document</p>
             <p className="text-sm text-white/40">Drag and drop or click to browse</p>
+            <p className="text-xs text-white/20 mt-1">Supports JPG, PNG, WebP, and other image formats</p>
           </div>
         </div>
       ) : (
@@ -172,19 +210,28 @@ export default function MedicalSummarizer({ incrementUsage, isLimitReached }) {
       )}
 
       {error && (
-        <div className="p-6 bg-red-500/10 border border-red-500/20 rounded-3xl space-y-4">
-          <div className="flex items-center gap-3 text-red-400">
-            <AlertCircle className="w-5 h-5" />
-            <p className="font-medium">{error}</p>
+        <motion.div
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="p-6 bg-red-500/10 border border-red-500/20 rounded-3xl space-y-4"
+        >
+          <div className="flex items-start gap-3 text-red-400">
+            <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+            <p className="font-medium text-sm leading-relaxed">{error}</p>
           </div>
-          <button 
-            onClick={handleUpload}
-            className="flex items-center gap-2 text-sm font-bold text-red-400 hover:text-red-300 uppercase tracking-wider"
-          >
-            <RefreshCw className="w-4 h-4" />
-            Retry Analysis
-          </button>
-        </div>
+          {file && (
+            <button
+              onClick={() => {
+                setError(null);
+                handleUpload();
+              }}
+              className="flex items-center gap-2 text-sm font-bold text-red-400 hover:text-red-300 uppercase tracking-wider"
+            >
+              <RefreshCw className="w-4 h-4" />
+              Retry Analysis
+            </button>
+          )}
+        </motion.div>
       )}
 
       {summary && (
@@ -198,4 +245,5 @@ export default function MedicalSummarizer({ incrementUsage, isLimitReached }) {
       )}
     </div>
   );
-    }
+}
+
