@@ -163,17 +163,24 @@ const handleSend = async (retryInput) => {
   }
 };
 
-  const handleLongPress = (e, message) => {
+const handleLongPress = (e, message) => {
+  if (e.cancelable) {
     e.preventDefault();
-    const rect = e.currentTarget.getBoundingClientRect();
-    setContextMenu({
-      visible: true,
-      x: e.clientX || (rect.left + rect.width / 2),
-      y: e.clientY || rect.top,
-      messageId: message.id,
-      content: message.content
-    });
-  };
+  }
+
+  const target = e.currentTarget;
+  if (!target) return; // avoid null errors
+
+  const rect = target.getBoundingClientRect();
+  setContextMenu({
+    visible: true,
+    x: e.clientX || (rect.left + rect.width / 2),
+    y: e.clientY || rect.top,
+    messageId: message.id,
+    content: message.content,
+  });
+};
+
 
   const copyToClipboard = (text) => {
     navigator.clipboard.writeText(text);

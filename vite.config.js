@@ -25,13 +25,13 @@ export default defineConfig(({ mode }) => {
           orientation: "portrait",
           icons: [
             {
-              src: "/public/icons/download.png",
+              src: "/icons/safeaid.png",
               sizes: "192x192",
               type: "image/png",
               purpose: "any maskable",
             },
             {
-              src: "/public/icons/download.png",
+              src: "/icons/safeaid.png",
               sizes: "512x512",
               type: "image/png",
               purpose: "any maskable",

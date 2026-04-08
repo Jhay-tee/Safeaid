@@ -1,12 +1,12 @@
+import { useState, useEffect } from "react";
 import { BrowserRouter as Router, Routes, Route, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 import { AlertCircle, Shield, Activity, Download } from "lucide-react";
 import EmergencyView from "./components/EmergencyView";
 import AppView from "./components/AppView";
 import AuthButton from "./components/AuthButton";
-import { useState, useEffect } from "react";
 
-function Landing({ deferredPrompt, handleInstallClick, isAuth, setIsAuth }) {
+function Landing({ deferredPrompt, handleInstallClick }) {
   const navigate = useNavigate();
 
   return (
@@ -69,6 +69,36 @@ export default function App() {
   const [deferredPrompt, setDeferredPrompt] = useState(null);
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
 
+  // Usage tracking
+  const [usage, setUsage] = useState(() => {
+    const saved = localStorage.getItem("safeaid_usage");
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        const now = Date.now();
+        if (now - (parsed.lastReset || 0) > 3600000) {
+          return { count: 0, lastReset: now };
+        }
+        return parsed;
+      } catch {
+        return { count: 0, lastReset: Date.now() };
+      }
+    }
+    return { count: 0, lastReset: Date.now() };
+  });
+
+  useEffect(() => {
+    localStorage.setItem("safeaid_usage", JSON.stringify(usage));
+  }, [usage]);
+
+  const incrementUsage = () => {
+    setUsage((prev) => ({ ...prev, count: (prev.count || 0) + 1 }));
+  };
+
+  const limit = isAuth ? 20 : 10;
+  const isLimitReached = usage.count >= limit;
+
+  // Install prompt
   useEffect(() => {
     const handleBeforeInstallPrompt = (e) => {
       e.preventDefault();
@@ -82,11 +112,10 @@ export default function App() {
     if (!deferredPrompt) return;
     deferredPrompt.prompt();
     const { outcome } = await deferredPrompt.userChoice;
-    if (outcome === "accepted") {
-      setDeferredPrompt(null);
-    }
+    if (outcome === "accepted") setDeferredPrompt(null);
   };
 
+  // Offline detection
   useEffect(() => {
     const handleOnline = () => setIsOffline(false);
     const handleOffline = () => setIsOffline(true);
@@ -132,19 +161,24 @@ export default function App() {
                 <span className="inline xs:hidden">APP</span>
               </button>
             )}
-            <AuthButton isAuth={isAuth} onToggle={() => setIsAuth(!isAuth)} />
+            <AuthButton isAuth={isAuth} onToggle={() => setIsAuth(prev => !prev)} />
           </div>
         </header>
 
         {/* Main Content */}
         <main className="pt-24 pb-12 px-6 max-w-2xl mx-auto">
           <Routes>
-            <Route path="/" element={<Landing deferredPrompt={deferredPrompt} handleInstallClick={handleInstallClick} isAuth={isAuth} setIsAuth={setIsAuth} />} />
-            <Route path="/emergency" element={<EmergencyView />} />
-            <Route path="/app" element={<AppView isAuth={isAuth} />} />
+            <Route path="/" element={<Landing deferredPrompt={deferredPrompt} handleInstallClick={handleInstallClick} />} />
+            <Route path="/emergency" element={<EmergencyView incrementUsage={incrementUsage} isLimitReached={isLimitReached} />} />
+            <Route path="/app" element={<AppView incrementUsage={incrementUsage} isLimitReached={isLimitReached} isAuth={isAuth} />} />
           </Routes>
         </main>
+
+        {/* Usage Indicator */}
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 px-4 py-2 bg-white/5 border border-white/10 rounded-full text-xs text-white/40 backdrop-blur-sm">
+          Usage: {usage.count}/{limit} requests this hour
+        </div>
       </div>
     </Router>
   );
-          }
+}
