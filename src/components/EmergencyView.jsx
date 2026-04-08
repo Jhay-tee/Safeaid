@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Phone,
@@ -77,13 +77,6 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
   const [error, setError] = useState(null);
   const [lastRequestTime, setLastRequestTime] = useState(0);
   const [contextMenu, setContextMenu] = useState(null);
-  const messagesEndRef = useRef(null);
-
-  const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, []);
-
-  useEffect(() => scrollToBottom(), [messages, isLoading, scrollToBottom]);
 
   // Listen to emergency triggers
   useEffect(() => {
@@ -95,97 +88,17 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
     return () => window.removeEventListener("trigger-emergency", handleTrigger);
   }, []);
 
-  const handleSend = async (retryInput) => {
-    const textToUse = retryInput || input;
-    if (!textToUse.trim() || isLoading) return;
-
-    const now = Date.now();
-    if (now - lastRequestTime < 2000) {
-      setError("Please wait a moment...");
-      return;
-    }
-    setLastRequestTime(now);
-
-    if (isLimitReached) {
-      setError("Limit reached.");
-      return;
-    }
-
-    if (!retryInput) {
-      setMessages((prev) => [
-        ...prev,
-        { id: Date.now().toString(), role: "user", content: textToUse, timestamp: new Date().toISOString() },
-      ]);
-      setInput("");
-    }
-
-    setIsLoading(true);
-    setError(null);
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000);
-
-    try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: textToUse, type: "emergency" }),
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-
-      const aiMessageId = (Date.now() + 1).toString();
-      setMessages((prev) => [
-        ...prev,
-        { id: aiMessageId, role: "assistant", content: "", isNew: true, timestamp: new Date().toISOString() },
-      ]);
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        const parts = buffer.split("\n\n");
-        buffer = parts.pop();
-
-        for (const part of parts) {
-          if (!part.startsWith("data:")) continue;
-          const jsonStr = part.replace("data: ", "").trim();
-          if (jsonStr === "[DONE]") continue;
-
-          const { text } = JSON.parse(jsonStr);
-
-          const triggerMatch = text.match(/\[TRIGGER_EMERGENCY:(\w+)\]/i);
-          let cleanText = text;
-          if (triggerMatch) {
-            cleanText = text.replace(triggerMatch[0], "").trim();
-            window.dispatchEvent(
-              new CustomEvent("trigger-emergency", { detail: { service: triggerMatch[1].toLowerCase() } })
-            );
-          }
-
-          setMessages((prev) =>
-            prev.map((m) => (m.id === aiMessageId ? { ...m, content: m.content + cleanText } : m))
-          );
-        }
-      }
-
-      incrementUsage();
-    } catch (err) {
-      setError(err.name === "AbortError" ? "Request timed out." : "Something went wrong.");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
+  // Long press for context menu
   const handleLongPress = (e, message) => {
     if (e.cancelable) e.preventDefault();
     const rect = e.currentTarget.getBoundingClientRect();
-    setContextMenu({ visible: true, x: e.clientX || rect.left, y: e.clientY || rect.top, messageId: message.id, content: message.content });
+    setContextMenu({
+      visible: true,
+      x: e.clientX || rect.left,
+      y: e.clientY || rect.top,
+      messageId: message.id,
+      content: message.content,
+    });
   };
 
   const copyToClipboard = (text) => {
@@ -200,6 +113,7 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
 
   return (
     <motion.div className="space-y-8">
+      {/* Back Button */}
       <button
         onClick={() => (selectedService ? setSelectedService(null) : onBack())}
         className="flex items-center gap-2 text-white/40 hover:text-white"
@@ -210,12 +124,17 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
 
       {selectedService ? (
         <>
+          {/* Service Info */}
           <div className="text-center space-y-6">
             <div className={cn("inline-flex p-6 rounded-full bg-white/5", selectedService.color)}>
-              {(() => { const Icon = selectedService.icon; return <Icon className="w-16 h-16" />; })()}
+              {(() => {
+                const Icon = selectedService.icon;
+                return <Icon className="w-16 h-16" />;
+              })()}
             </div>
             <h2 className="text-3xl font-bold">{selectedService.name}</h2>
 
+            {/* Call Buttons */}
             <div className="flex flex-col gap-6">
               {selectedService.numbers.map((num, idx) => (
                 <a
@@ -231,12 +150,14 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
             </div>
           </div>
 
-          <div className="space-y-4 pt-6">
+          {/* Chat Area */}
+          <div className="space-y-4 pt-6 max-h-[60vh] overflow-y-auto">
+            {/* Input */}
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
               placeholder="Describe emergency..."
-              className="w-full p-4 bg-white/5 rounded-xl"
+              className="w-full p-4 bg-white/5 rounded-xl resize-none"
               disabled={isLoading}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
@@ -248,40 +169,57 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
             <button
               onClick={() => handleSend()}
               disabled={isLoading || !input.trim()}
-              className="p-3 bg-white text-black rounded-xl disabled:opacity-50"
+              className="p-3 bg-white text-black rounded-xl disabled:opacity-50 mt-2"
             >
               {isLoading ? <Loader2 className="animate-spin" /> : <Send />}
             </button>
 
+            {/* Error */}
             {error && (
-              <div className="text-red-400 flex items-center gap-2">
+              <div className="text-red-400 flex items-center gap-2 mt-2">
                 {error}
-                <button onClick={() => {
-                  const lastUserMsg = [...messages].reverse().find(m => m.role === "user");
-                  if (lastUserMsg) handleSend(lastUserMsg.content);
-                  else handleSend();
-                }}><RefreshCw /></button>
+                <button
+                  onClick={() => {
+                    const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
+                    if (lastUserMsg) handleSend(lastUserMsg.content);
+                    else handleSend();
+                  }}
+                >
+                  <RefreshCw />
+                </button>
               </div>
             )}
 
-            {messages.map((msg) => (
-              <div key={msg.id} className="prose prose-invert">
-                {msg.deleted ? (
-                  "Message deleted"
-                ) : msg.isNew ? (
-                  <TypingText
-                    text={msg.content}
-                    onComplete={() => setMessages((prev) =>
-                      prev.map((m) => (m.id === msg.id ? { ...m, isNew: false } : m))
-                    )}
-                  />
-                ) : (
-                  <Markdown>{msg.content}</Markdown>
-                )}
-              </div>
-            ))}
-
-            <div ref={messagesEndRef} />
+            {/* Messages */}
+            <div className="flex flex-col gap-3 mt-4">
+              {messages.map((msg) => (
+                <div
+                  key={msg.id}
+                  className={cn(
+                    "p-3 rounded-xl max-w-[75%] break-words",
+                    msg.role === "user"
+                      ? "self-end bg-blue-600 text-white"
+                      : "self-start bg-zinc-800 text-white"
+                  )}
+                  onContextMenu={(e) => handleLongPress(e, msg)}
+                >
+                  {msg.deleted ? (
+                    <em className="text-gray-400">Message deleted</em>
+                  ) : msg.isNew ? (
+                    <TypingText
+                      text={msg.content}
+                      onComplete={() =>
+                        setMessages((prev) =>
+                          prev.map((m) => (m.id === msg.id ? { ...m, isNew: false } : m))
+                        )
+                      }
+                    />
+                  ) : (
+                    <Markdown>{msg.content}</Markdown>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
         </>
       ) : (
@@ -302,6 +240,7 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
         </div>
       )}
 
+      {/* Context Menu */}
       <AnimatePresence>
         {contextMenu && (
           <>
@@ -318,10 +257,16 @@ export default function EmergencyView({ onBack, incrementUsage, isLimitReached }
               }}
               className="bg-zinc-900 border border-white/10 rounded-xl p-1 shadow-2xl min-w-[140px]"
             >
-              <button onClick={() => copyToClipboard(contextMenu.content)} className="w-full flex items-center gap-3 px-3 py-2 text-xs font-bold text-white hover:bg-white/10 rounded-lg transition-colors">
+              <button
+                onClick={() => copyToClipboard(contextMenu.content)}
+                className="w-full flex items-center gap-3 px-3 py-2 text-xs font-bold text-white hover:bg-white/10 rounded-lg transition-colors"
+              >
                 COPY
               </button>
-              <button onClick={() => deleteMessage(contextMenu.messageId)} className="w-full flex items-center gap-3 px-3 py-2 text-xs font-bold text-red-400 hover:bg-red-400/10 rounded-lg transition-colors">
+              <button
+                onClick={() => deleteMessage(contextMenu.messageId)}
+                className="w-full flex items-center gap-3 px-3 py-2 text-xs font-bold text-red-400 hover:bg-red-400/10 rounded-lg transition-colors"
+              >
                 DELETE
               </button>
             </motion.div>
