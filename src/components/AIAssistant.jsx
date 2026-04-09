@@ -1,8 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { motion, AnimatePresence } from "motion/react";
-import { Send, Loader2, Heart, Shield, Activity, Copy, Trash2 } from "lucide-react";
+import { Loader2, Heart, Shield, Activity, AlertTriangle } from "lucide-react";
 import { cn } from "../lib/utils";
-import Markdown from "react-markdown";
+import { extractText } from "../utils/ChatHelpers";
+
+import ChatHeader from "./ChatHeader";
+import MessageItem from "./MessageItem";
+import ChatInput from "./ChatInput";
+import ErrorMessage from "./ErrorMessage";
+import ContextMenu from "./ContextMenu";
 
 const TYPE_CONFIG = {
   health: { name: "Health Assistant", icon: Heart, color: "text-pink-500", placeholder: "Ask a health question..." },
@@ -10,31 +15,24 @@ const TYPE_CONFIG = {
   emergency: { name: "Emergency AI", icon: Shield, color: "text-red-500", placeholder: "Describe the emergency..." },
 };
 
-function extractText(parsed) {
-  if (!parsed || typeof parsed !== "object") return "";
-
-  if (typeof parsed.text === "string" && parsed.text.trim()) return parsed.text;
-
-  if (Array.isArray(parsed.candidates) && parsed.candidates.length > 0) {
-    const parts = parsed.candidates[0]?.content?.parts;
-    if (Array.isArray(parts)) {
-      const joined = parts
-        .filter((p) => !p.thought)
-        .map((p) => (typeof p.text === "string" ? p.text : ""))
-        .join("");
-      if (joined.trim()) return joined;
-    }
-  }
-
-  return "";
-}
-
 export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState(() => {
     try {
       const saved = localStorage.getItem(`safeaid_chat_${type}`);
-      return saved ? JSON.parse(saved) : [];
+      if (!saved) return [];
+      
+      const parsed = JSON.parse(saved);
+      
+      // Deduplicate IDs (fixes old duplicate keys from localStorage)
+      const seenIds = new Set();
+      return parsed.map((msg) => {
+        if (seenIds.has(msg.id)) {
+          return { ...msg, id: `${Date.now()}-${Math.random().toString(36).substring(2, 9)}` };
+        }
+        seenIds.add(msg.id);
+        return msg;
+      });
     } catch (_) {
       return [];
     }
@@ -45,6 +43,8 @@ export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
   const [contextMenu, setContextMenu] = useState(null);
   const messagesEndRef = useRef(null);
   const config = TYPE_CONFIG[type];
+
+  const generateId = () => `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 
   useEffect(() => {
     try {
@@ -72,15 +72,26 @@ export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
     setLastRequestTime(now);
 
     if (isLimitReached) {
-      setError("You've reached your limit. Please sign in to continue.");
+      setError("You've reached your free usage limit. Please sign in to continue.");
       return;
     }
+
+    // ✅ Build minimal context: last assistant message (if any) + new user message
+    const lastAssistantMsg = [...messages]
+      .reverse()
+      .find(m => m.role === "assistant" && !m.deleted && m.content);
+    
+    const contextMessages = [];
+    if (lastAssistantMsg) {
+      contextMessages.push({ role: "model", parts: [{ text: lastAssistantMsg.content }] });
+    }
+    contextMessages.push({ role: "user", parts: [{ text: textToUse }] });
 
     if (!retryInput) {
       setMessages((prev) => [
         ...prev,
         {
-          id: Date.now().toString(),
+          id: generateId(),
           role: "user",
           content: textToUse,
           timestamp: new Date().toISOString(),
@@ -92,7 +103,7 @@ export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
     setIsLoading(true);
     setError(null);
 
-    const aiMessageId = (Date.now() + 1).toString();
+    const aiMessageId = generateId();
 
     setMessages((prev) => [
       ...prev,
@@ -111,7 +122,11 @@ export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: textToUse, type }),
+        body: JSON.stringify({ 
+          message: textToUse, 
+          type,
+          context: contextMessages   // ✅ Send the minimal context
+        }),
         signal: controller.signal,
       });
 
@@ -124,7 +139,8 @@ export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
           errMsg = typeof errData.error === "string" ? errData.error : errMsg;
         } catch (_) {}
         setMessages((prev) => prev.filter((m) => m.id !== aiMessageId));
-        setError(errMsg);
+        setError("Message didn't go through. Please click retry.");
+        console.error("[SafeAid] API error:", { status: res.status, errMsg });
         setIsLoading(false);
         return;
       }
@@ -158,7 +174,8 @@ export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
 
           if (parsed && typeof parsed.error === "string") {
             setMessages((prev) => prev.filter((m) => m.id !== aiMessageId));
-            setError(parsed.error);
+            setError("Message didn't go through. Please click retry.");
+            console.error("[SafeAid] Stream error:", parsed.error);
             setIsLoading(false);
             return;
           }
@@ -197,10 +214,10 @@ export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
     } catch (err) {
       clearTimeout(timeoutId);
       setMessages((prev) => prev.filter((m) => m.id !== aiMessageId));
+      setError("Message didn't go through. Please click retry.");
+      console.error("[SafeAid] Request failed:", err);
       if (err.name === "AbortError") {
-        setError("Request timed out. Please try again.");
-      } else {
-        setError(err.message || "Connection failed. Please check your internet and try again.");
+        console.error("[SafeAid] Request timed out after 30s.");
       }
     } finally {
       setIsLoading(false);
@@ -237,24 +254,22 @@ export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
     }
   };
 
+  const handleRetry = () => {
+    setError(null);
+    const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
+    if (lastUserMsg) handleSend(lastUserMsg.content);
+  };
+
   return (
     <div className="flex flex-col h-full max-h-[80vh]">
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-4">
-          <div className={cn("p-3 rounded-xl bg-white/5", config.color)}>
-            <config.icon className="w-6 h-6 lg:w-8 lg:h-8" />
-          </div>
-          <h2 className="text-xl lg:text-2xl font-bold tracking-tight">{config.name}</h2>
+      <ChatHeader config={config} messageCount={messages.length} onClear={clearHistory} />
+
+      {isLimitReached && (
+        <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-center gap-3 text-amber-400 text-sm">
+          <AlertTriangle className="w-5 h-5 shrink-0" />
+          <span>You've reached the free usage limit. Please sign in to continue chatting.</span>
         </div>
-        {messages.length > 0 && (
-          <button
-            onClick={clearHistory}
-            className="text-[10px] font-bold text-white/20 hover:text-white/40 uppercase tracking-widest transition-colors"
-          >
-            Clear Chat
-          </button>
-        )}
-      </div>
+      )}
 
       <div className="flex-1 overflow-y-auto space-y-4 lg:space-y-6 mb-6 pr-2 lg:pr-6 custom-scrollbar">
         {messages.length === 0 && !isLoading && (
@@ -265,145 +280,33 @@ export default function AIAssistant({ type, incrementUsage, isLimitReached }) {
         )}
 
         {messages.map((msg) => (
-          <motion.div
+          <MessageItem
             key={msg.id}
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            onContextMenu={(e) => handleLongPress(e, msg)}
-            onTouchStart={(e) => {
-              const timer = setTimeout(() => handleLongPress(e, msg), 500);
-              e.currentTarget.dataset.timer = timer;
-            }}
-            onTouchEnd={(e) => clearTimeout(e.currentTarget.dataset.timer)}
-            className={cn(
-              "flex flex-col max-w-[85%] lg:max-w-[70%] group relative",
-              msg.role === "user" ? "ml-auto items-end" : "mr-auto items-start"
-            )}
-          >
-            <div
-              className={cn(
-                "p-4 rounded-2xl text-sm md:text-base lg:text-lg lg:p-6 transition-all",
-                msg.role === "user"
-                  ? "bg-white text-black font-medium rounded-tr-none"
-                  : "bg-white/5 border border-white/10 text-white rounded-tl-none",
-                msg.deleted && "opacity-40 italic bg-transparent border-dashed"
-              )}
-            >
-              {msg.deleted ? (
-                "Message was deleted"
-              ) : msg.role === "assistant" ? (
-                msg.content ? (
-                  <div className="prose prose-invert prose-sm lg:prose lg:prose-lg max-w-none">
-                    <Markdown>{msg.content}</Markdown>
-                  </div>
-                ) : (
-                  <span className="opacity-40 text-xs uppercase tracking-widest animate-pulse">
-                    Waiting for response...
-                  </span>
-                )
-              ) : (
-                <div className="prose prose-sm max-w-none">
-                  <Markdown>{msg.content}</Markdown>
-                </div>
-              )}
-            </div>
-            <span className="text-[10px] lg:text-xs text-white/20 mt-1 uppercase tracking-tighter">
-              {msg.role === "user" ? "You" : "SafeAid"}
-            </span>
-          </motion.div>
+            message={msg}
+            onContextMenu={handleLongPress}
+          />
         ))}
 
         {isLoading && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="flex items-center gap-2 text-white/40 text-[10px] lg:text-sm font-bold uppercase tracking-widest ml-2"
-          >
+          <div className="flex items-center gap-2 text-white/40 text-[10px] lg:text-sm font-bold uppercase tracking-widest ml-2">
             <Loader2 className="w-3 h-3 lg:w-4 lg:h-4 animate-spin" />
             SafeAid is thinking...
-          </motion.div>
+          </div>
         )}
 
-        {error && (
-          <motion.div
-            initial={{ opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="p-4 lg:p-6 bg-red-500/10 border border-red-500/20 rounded-2xl text-xs lg:text-sm text-red-400 font-medium flex items-center justify-between gap-4"
-          >
-            <span>{error}</span>
-            <button
-              onClick={() => {
-                setError(null);
-                const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
-                if (lastUserMsg) handleSend(lastUserMsg.content);
-              }}
-              className="px-3 py-1 bg-red-500/20 rounded-lg hover:bg-red-500/30 transition-colors shrink-0 font-bold uppercase tracking-tighter"
-            >
-              Retry
-            </button>
-          </motion.div>
-        )}
+        {error && <ErrorMessage error={error} onRetry={handleRetry} />}
 
         <div ref={messagesEndRef} />
       </div>
 
-      <div className="relative">
-        <textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              handleSend();
-            }
-          }}
-          placeholder={config.placeholder}
-          className="w-full bg-white/5 border border-white/10 backdrop-blur-md rounded-2xl p-4 pr-16 lg:p-5 min-h-[60px] lg:min-h-[80px] max-h-[120px] lg:max-h-[220px] focus:outline-none focus:border-white/20 transition-colors resize-none text-sm lg:text-base disabled:opacity-50"
-          disabled={isLoading}
-        />
-        <button
-          onClick={() => handleSend()}
-          disabled={isLoading || !input.trim()}
-          className="absolute bottom-3 right-3 p-2 bg-white text-black rounded-xl shadow-lg hover:bg-white/90 transition-all active:scale-[0.95] disabled:opacity-50"
-        >
-          {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
-        </button>
-      </div>
-
-      <AnimatePresence>
-        {contextMenu && (
-          <>
-            <div className="fixed inset-0 z-[100]" onClick={() => setContextMenu(null)} />
-            <motion.div
-              initial={{ opacity: 0, scale: 0.9, y: 10 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.9, y: 10 }}
-              style={{
-                position: "fixed",
-                left: Math.min(window.innerWidth - 150, contextMenu.x),
-                top: Math.min(window.innerHeight - 100, contextMenu.y),
-                zIndex: 101,
-              }}
-              className="bg-zinc-900 border border-white/10 rounded-xl p-1 shadow-2xl min-w-[140px]"
-            >
-              <button
-                onClick={() => copyToClipboard(contextMenu.content)}
-                className="w-full flex items-center gap-3 px-3 py-2 text-xs font-bold text-white hover:bg-white/10 rounded-lg transition-colors"
-              >
-                <Copy className="w-4 h-4" />
-                COPY
-              </button>
-              <button
-                onClick={() => deleteMessage(contextMenu.messageId)}
-                className="w-full flex items-center gap-3 px-3 py-2 text-xs font-bold text-red-400 hover:bg-red-400/10 rounded-lg transition-colors"
-              >
-                <Trash2 className="w-4 h-4" />
-                DELETE
-              </button>
-            </motion.div>
-          </>
-        )}
-      </AnimatePresence>
+      <ChatInput
+        value={input}
+        onChange={(e) => setInput(e.target.value)}
+        onSend={handleSend}
+        isLoading={isLoading}
+        placeholder={isLimitReached ? "Sign in to continue chatting..." : config.placeholder}
+        disabled={isLimitReached}
+      />
     </div>
   );
 }

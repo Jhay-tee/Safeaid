@@ -1,6 +1,6 @@
 import { useState, useRef } from "react";
 import { motion } from "motion/react";
-import { FileText, Upload, X, Loader2, RefreshCw, CheckCircle2, AlertCircle } from "lucide-react";
+import { FileText, Upload, X, Loader2, RefreshCw, CheckCircle2, AlertCircle, AlertTriangle } from "lucide-react";
 import Markdown from "react-markdown";
 
 function extractText(parsed) {
@@ -31,6 +31,10 @@ export default function MedicalSummarizer({ incrementUsage, isLimitReached }) {
   const fileInputRef = useRef(null);
 
   const handleFileChange = (e) => {
+    if (isLimitReached) {
+      setError("You've reached your limit. Please sign in to continue.");
+      return;
+    }
     const selectedFile = e.target.files[0];
     if (selectedFile) {
       if (!selectedFile.type.startsWith("image/")) {
@@ -72,7 +76,8 @@ export default function MedicalSummarizer({ incrementUsage, isLimitReached }) {
           const errData = await res.json();
           errMsg = typeof errData.error === "string" ? errData.error : errMsg;
         } catch (_) {}
-        setError(errMsg);
+        setError("Analysis didn't go through. Please try again.");
+        console.error("[SafeAid] Summarize API error:", { status: res.status, errMsg });
         setIsLoading(false);
         return;
       }
@@ -106,7 +111,8 @@ export default function MedicalSummarizer({ incrementUsage, isLimitReached }) {
           }
 
           if (parsed && typeof parsed.error === "string") {
-            setError(parsed.error);
+            setError("Analysis didn't go through. Please try again.");
+            console.error("[SafeAid] Stream error:", parsed.error);
             setIsLoading(false);
             return;
           }
@@ -128,8 +134,8 @@ export default function MedicalSummarizer({ incrementUsage, isLimitReached }) {
 
       incrementUsage();
     } catch (err) {
-      console.error("Summarize Error:", err);
-      setError(err.message || "Request failed. Please check your internet connection.");
+      console.error("[SafeAid] Summarize request failed:", err);
+      setError("Analysis didn't go through. Please check your connection.");
     } finally {
       setIsLoading(false);
     }
@@ -142,6 +148,27 @@ export default function MedicalSummarizer({ incrementUsage, isLimitReached }) {
     setError(null);
   };
 
+  const handleDrop = (e) => {
+    e.preventDefault();
+    if (isLimitReached) {
+      setError("You've reached your limit. Please sign in to continue.");
+      return;
+    }
+    const droppedFile = e.dataTransfer.files[0];
+    if (droppedFile && droppedFile.type.startsWith("image/")) {
+      setFile(droppedFile);
+      const reader = new FileReader();
+      reader.onloadend = () => setPreview(reader.result);
+      reader.readAsDataURL(droppedFile);
+    } else {
+      setError("Please drop an image file.");
+    }
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-4">
@@ -151,23 +178,31 @@ export default function MedicalSummarizer({ incrementUsage, isLimitReached }) {
         <h2 className="text-2xl font-bold tracking-tight">Medical Record Summarizer</h2>
       </div>
 
+      {/* Limit Reached Banner */}
+      {isLimitReached && (
+        <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-center gap-3 text-amber-400 text-sm">
+          <AlertTriangle className="w-5 h-5 shrink-0" />
+          <span>You've reached the free usage limit. Please sign in to continue.</span>
+        </div>
+      )}
+
       {!file ? (
         <div
-          onClick={() => fileInputRef.current.click()}
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            e.preventDefault();
-            const droppedFile = e.dataTransfer.files[0];
-            if (droppedFile && droppedFile.type.startsWith("image/")) {
-              setFile(droppedFile);
-              const reader = new FileReader();
-              reader.onloadend = () => setPreview(reader.result);
-              reader.readAsDataURL(droppedFile);
-            } else {
-              setError("Please drop an image file.");
+          onClick={() => {
+            if (isLimitReached) {
+              setError("You've reached your limit. Please sign in to continue.");
+              return;
             }
+            fileInputRef.current.click();
           }}
-          className="group relative flex flex-col items-center justify-center w-full py-16 bg-white/5 border-2 border-dashed border-white/10 backdrop-blur-md rounded-3xl hover:border-white/20 transition-all cursor-pointer"
+          onDragOver={handleDragOver}
+          onDrop={handleDrop}
+          className={cn(
+            "group relative flex flex-col items-center justify-center w-full py-16 bg-white/5 border-2 border-dashed border-white/10 backdrop-blur-md rounded-3xl transition-all",
+            isLimitReached
+              ? "opacity-50 cursor-not-allowed"
+              : "hover:border-white/20 cursor-pointer"
+          )}
         >
           <input
             type="file"
@@ -175,6 +210,7 @@ export default function MedicalSummarizer({ incrementUsage, isLimitReached }) {
             onChange={handleFileChange}
             accept="image/*"
             className="hidden"
+            disabled={isLimitReached}
           />
           <div className="p-6 rounded-full bg-white/5 group-hover:scale-110 transition-transform">
             <Upload className="w-10 h-10 text-white/40 group-hover:text-white" />
@@ -199,8 +235,11 @@ export default function MedicalSummarizer({ incrementUsage, isLimitReached }) {
 
           <button
             onClick={handleUpload}
-            disabled={isLoading}
-            className="w-full py-4 bg-white text-black font-bold rounded-2xl hover:bg-white/90 transition-all active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-3"
+            disabled={isLoading || isLimitReached}
+            className={cn(
+              "w-full py-4 bg-white text-black font-bold rounded-2xl hover:bg-white/90 transition-all active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-3",
+              isLimitReached && "cursor-not-allowed"
+            )}
           >
             {isLoading ? (
               <>
@@ -234,7 +273,7 @@ export default function MedicalSummarizer({ incrementUsage, isLimitReached }) {
             <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
             <p className="font-medium text-sm leading-relaxed">{error}</p>
           </div>
-          {file && (
+          {file && !isLimitReached && (
             <button
               onClick={() => {
                 setError(null);
@@ -260,4 +299,9 @@ export default function MedicalSummarizer({ incrementUsage, isLimitReached }) {
       )}
     </div>
   );
+}
+
+// Helper for conditional classes
+function cn(...classes) {
+  return classes.filter(Boolean).join(" ");
 }

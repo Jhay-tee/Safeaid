@@ -95,7 +95,7 @@ export default function App() {
     setUsage((prev) => ({ ...prev, count: (prev.count || 0) + 1 }));
   };
 
-  const limit = isAuth ? 20 : 10;
+  const limit = isAuth ? 30 : 10;
   const isLimitReached = usage.count >= limit;
 
   // Install prompt

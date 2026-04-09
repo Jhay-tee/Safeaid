@@ -11,9 +11,11 @@ import {
   Send,
   Loader2,
   RefreshCw,
+  AlertTriangle,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import Markdown from "react-markdown";
+import { extractText } from "../utils/ChatHelpers";
 
 const SERVICES = [
   {
@@ -57,22 +59,48 @@ export default function EmergencyView({ incrementUsage, isLimitReached }) {
   const [contextMenu, setContextMenu] = useState(null);
   const messagesEndRef = useRef(null);
 
+  const [autoCallTimer, setAutoCallTimer] = useState(null);
+  const [pendingAutoCall, setPendingAutoCall] = useState(null);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isLoading]);
 
   useEffect(() => {
-    const handleTrigger = (e) => {
-      const service = SERVICES.find((s) => s.id === e.detail.service);
-      if (service) setSelectedService(service);
+    return () => {
+      if (autoCallTimer) clearInterval(autoCallTimer);
     };
-    window.addEventListener("trigger-emergency", handleTrigger);
-    return () => window.removeEventListener("trigger-emergency", handleTrigger);
-  }, []);
+  }, [autoCallTimer]);
 
   const handleBack = () => {
     if (selectedService) setSelectedService(null);
     else navigate(-1);
+  };
+
+  const startAutoCallCountdown = (service, number) => {
+    let countdown = 3;
+    setAutoCallTimer(countdown);
+
+    const interval = setInterval(() => {
+      countdown -= 1;
+      setAutoCallTimer(countdown);
+      if (countdown <= 0) {
+        clearInterval(interval);
+        setAutoCallTimer(null);
+        window.location.href = `tel:${number}`;
+        setPendingAutoCall(null);
+      }
+    }, 1000);
+
+    setAutoCallTimer(interval);
+  };
+
+  const cancelAutoCall = () => {
+    if (autoCallTimer) {
+      clearInterval(autoCallTimer);
+      setAutoCallTimer(null);
+    }
+    setPendingAutoCall(null);
   };
 
   const handleSend = async (retryInput) => {
@@ -81,15 +109,28 @@ export default function EmergencyView({ incrementUsage, isLimitReached }) {
 
     const now = Date.now();
     if (now - lastRequestTime < 2000) {
-      setError("Please wait a moment before sending another message.");
+      setError("Message didn't go through. Please click retry.");
+      console.error("[SafeAid] Rate limit hit:", { now, lastRequestTime });
       return;
     }
     setLastRequestTime(now);
 
     if (isLimitReached) {
-      setError("You've reached your limit. Please sign in to continue.");
+      setError("Message didn't go through. Please click retry.");
+      console.error("[SafeAid] Usage limit reached.");
       return;
     }
+
+    // ✅ Build context: last assistant message + new user message
+    const lastAssistantMsg = [...messages]
+      .reverse()
+      .find(m => m.role === "assistant" && !m.deleted && m.content);
+    
+    const contextMessages = [];
+    if (lastAssistantMsg) {
+      contextMessages.push({ role: "model", parts: [{ text: lastAssistantMsg.content }] });
+    }
+    contextMessages.push({ role: "user", parts: [{ text: textToUse }] });
 
     if (!retryInput) {
       setMessages((prev) => [
@@ -126,7 +167,11 @@ export default function EmergencyView({ incrementUsage, isLimitReached }) {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: textToUse, type: "emergency" }),
+        body: JSON.stringify({ 
+          message: textToUse, 
+          type: "emergency",
+          context: contextMessages,   // ✅ Send context
+        }),
         signal: controller.signal,
       });
 
@@ -139,7 +184,8 @@ export default function EmergencyView({ incrementUsage, isLimitReached }) {
           errMsg = errData.error || errMsg;
         } catch (_) {}
         setMessages((prev) => prev.filter((m) => m.id !== aiMessageId));
-        setError(errMsg);
+        setError("Message didn't go through. Please click retry.");
+        console.error("[SafeAid] API error:", { status: res.status, errMsg });
         setIsLoading(false);
         return;
       }
@@ -147,7 +193,7 @@ export default function EmergencyView({ incrementUsage, isLimitReached }) {
       const reader = res.body.getReader();
       const decoder = new TextDecoder("utf-8");
       let buffer = "";
-      let receivedContent = false;
+      let fullResponse = "";
 
       while (true) {
         const { done, value } = await reader.read();
@@ -155,13 +201,14 @@ export default function EmergencyView({ incrementUsage, isLimitReached }) {
 
         buffer += decoder.decode(value, { stream: true });
         const parts = buffer.split("\n\n");
-        buffer = parts.pop();
+        buffer = parts.pop() ?? "";
 
         for (const part of parts) {
-          if (!part.startsWith("data:")) continue;
+          const trimmed = part.trim();
+          if (!trimmed.startsWith("data:")) continue;
 
-          const jsonStr = part.replace(/^data:\s*/, "").trim();
-          if (jsonStr === "[DONE]") continue;
+          const jsonStr = trimmed.replace(/^data:\s*/, "").trim();
+          if (!jsonStr || jsonStr === "[DONE]") continue;
 
           let parsed;
           try {
@@ -172,51 +219,107 @@ export default function EmergencyView({ incrementUsage, isLimitReached }) {
 
           if (parsed.error) {
             setMessages((prev) => prev.filter((m) => m.id !== aiMessageId));
-            setError(parsed.error);
+            setError("Message didn't go through. Please click retry.");
+            console.error("[SafeAid] Stream error:", parsed.error);
             setIsLoading(false);
             return;
           }
 
-          const text =
-            parsed.text ||
-            parsed.candidates?.[0]?.content?.parts?.[0]?.text ||
-            "";
+          const text = extractText(parsed);
+          if (!text) continue;
 
-          if (!text || !text.trim()) continue;
-
-          const triggerMatch = text.match(/\[TRIGGER_EMERGENCY:(\w+)\]/i);
-          let cleanText = text;
-          if (triggerMatch) {
-            cleanText = text.replace(triggerMatch[0], "").trim();
-            window.dispatchEvent(
-              new CustomEvent("trigger-emergency", { detail: { service: triggerMatch[1].toLowerCase() } })
-            );
-          }
-
-          receivedContent = true;
+          fullResponse += text;
           setMessages((prev) =>
             prev.map((m) =>
-              m.id === aiMessageId ? { ...m, content: m.content + cleanText } : m
+              m.id === aiMessageId ? { ...m, content: fullResponse } : m
             )
           );
         }
       }
 
-      if (!receivedContent) {
-        setMessages((prev) => prev.filter((m) => m.id !== aiMessageId));
-        setError("No response received. Please try again.");
-        setIsLoading(false);
-        return;
+      let finalContent = fullResponse;
+      let criticalTrigger = null;
+      let infoTrigger = null;
+
+      const criticalMatch = finalContent.match(/\[TRIGGER_EMERGENCY_CRITICAL:(\w+)\]/i);
+      if (criticalMatch) {
+        criticalTrigger = criticalMatch[1].toLowerCase();
+        finalContent = finalContent.replace(criticalMatch[0], "").trim();
+      } else {
+        const infoMatch = finalContent.match(/\[TRIGGER_EMERGENCY:(\w+)\]/i);
+        if (infoMatch) {
+          infoTrigger = infoMatch[1].toLowerCase();
+          finalContent = finalContent.replace(infoMatch[0], "").trim();
+        }
+      }
+
+      // ✅ Fallback: severe keyword detection
+      if (!criticalTrigger && !infoTrigger) {
+        const userMessageLower = textToUse.toLowerCase();
+        const serviceKeywords = {
+          ambulance: [
+            "bleeding heavily", "bleeding out", "unconscious", "chest wound",
+            "heart attack", "can't breathe", "severe bleeding", "dying",
+            "stroke", "seizure", "not breathing", "no pulse", "chest pain",
+            "accident", "injury", "broken bone", "fracture", "medical emergency"
+          ],
+          police: [
+            "robbery", "stolen", "thief", "burglary", "attack", "assault",
+            "kidnap", "violence", "gun", "weapon", "crime", "suspicious",
+            "trespass", "vandalism", "fight", "threat"
+          ],
+          fire: [
+            "fire", "burning", "smoke", "flame", "explosion", "gas leak",
+            "inferno", "blaze", "fire outbreak"
+          ]
+        };
+
+        for (const [serviceId, keywords] of Object.entries(serviceKeywords)) {
+          if (keywords.some(keyword => userMessageLower.includes(keyword))) {
+            criticalTrigger = serviceId;
+            console.log(`[SafeAid] Fallback triggered: "${serviceId}" keywords detected.`);
+            break;
+          }
+        }
+
+        if (!criticalTrigger) {
+          if (userMessageLower.includes("call police") || userMessageLower.includes("police number")) {
+            infoTrigger = "police";
+          } else if (userMessageLower.includes("call fire") || userMessageLower.includes("fire service")) {
+            infoTrigger = "fire";
+          } else if (userMessageLower.includes("call ambulance") || userMessageLower.includes("ambulance number")) {
+            infoTrigger = "ambulance";
+          }
+        }
+      }
+
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === aiMessageId ? { ...m, content: finalContent } : m
+        )
+      );
+
+      const serviceId = criticalTrigger || infoTrigger;
+      if (serviceId) {
+        const service = SERVICES.find((s) => s.id === serviceId);
+        if (service) {
+          setSelectedService(service);
+          if (criticalTrigger) {
+            const firstNumber = service.numbers[0];
+            setPendingAutoCall({ service, number: firstNumber });
+            startAutoCallCountdown(service, firstNumber);
+          }
+        }
       }
 
       incrementUsage();
     } catch (err) {
       clearTimeout(timeoutId);
       setMessages((prev) => prev.filter((m) => m.id !== aiMessageId));
+      setError("Message didn't go through. Please click retry.");
+      console.error("[SafeAid] Request failed:", err);
       if (err.name === "AbortError") {
-        setError("Request timed out. Please try again.");
-      } else {
-        setError(err.message || "Connection failed. Please check your internet and try again.");
+        console.error("[SafeAid] Request timed out after 30s.");
       }
     } finally {
       setIsLoading(false);
@@ -252,6 +355,14 @@ export default function EmergencyView({ incrementUsage, isLimitReached }) {
         {selectedService ? "Back to Services" : "Back"}
       </button>
 
+      {/* Limit Reached Banner */}
+      {isLimitReached && (
+        <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-center gap-3 text-amber-400 text-sm">
+          <AlertTriangle className="w-5 h-5 shrink-0" />
+          <span>You've reached the free usage limit. Please sign in to continue.</span>
+        </div>
+      )}
+
       {selectedService ? (
         <>
           <div className="text-center space-y-6">
@@ -262,6 +373,24 @@ export default function EmergencyView({ incrementUsage, isLimitReached }) {
               })()}
             </div>
             <h2 className="text-3xl font-bold">{selectedService.name}</h2>
+
+            {pendingAutoCall && (
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="bg-red-500/20 border border-red-500 rounded-xl p-4 text-center"
+              >
+                <p className="font-bold text-red-400">
+                  ⚠️ CRITICAL: Auto-calling {pendingAutoCall.service.name} in {autoCallTimer} seconds...
+                </p>
+                <button
+                  onClick={cancelAutoCall}
+                  className="mt-2 px-4 py-2 bg-white/10 rounded-lg text-sm font-bold hover:bg-white/20"
+                >
+                  Cancel Auto-Call
+                </button>
+              </motion.div>
+            )}
 
             <div className="flex flex-col gap-6">
               {selectedService.numbers.map((num, idx) => (
@@ -308,7 +437,11 @@ export default function EmergencyView({ incrementUsage, isLimitReached }) {
                           <Markdown>{msg.content}</Markdown>
                         </div>
                       ) : (
-                        <span className="opacity-40 text-xs uppercase tracking-widest animate-pulse">Waiting...</span>
+                        <div className="flex items-center gap-1 py-1">
+                          <span className="w-2 h-2 bg-white/40 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
+                          <span className="w-2 h-2 bg-white/40 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
+                          <span className="w-2 h-2 bg-white/40 rounded-full animate-bounce"></span>
+                        </div>
                       )
                     ) : (
                       <Markdown>{msg.content}</Markdown>
@@ -359,7 +492,7 @@ export default function EmergencyView({ incrementUsage, isLimitReached }) {
               <textarea
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder="Describe the emergency..."
+                placeholder={isLimitReached ? "Sign in to continue..." : "Describe the emergency..."}
                 className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 pr-16 min-h-[60px] max-h-[120px] focus:outline-none focus:border-white/20 transition-colors resize-none text-sm disabled:opacity-50"
                 disabled={isLoading || isLimitReached}
                 onKeyDown={(e) => {
@@ -432,4 +565,3 @@ export default function EmergencyView({ incrementUsage, isLimitReached }) {
     </motion.div>
   );
 }
-
