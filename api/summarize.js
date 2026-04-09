@@ -6,11 +6,9 @@ let genAI = null;
 function getGenAI() {
   if (!genAI) {
     const apiKey = process.env.GEMINI_API_KEY;
-
     if (!apiKey) {
       throw new Error("Missing GEMINI_API_KEY");
     }
-
     genAI = new GoogleGenerativeAI(apiKey);
   }
   return genAI;
@@ -18,7 +16,6 @@ function getGenAI() {
 
 function extractTextFromChunk(chunk) {
   let text = "";
-
   try {
     if (typeof chunk.text === "function") {
       text = chunk.text() || "";
@@ -26,12 +23,10 @@ function extractTextFromChunk(chunk) {
       text = chunk.text;
     }
   } catch (_) {}
-
   if (!text && chunk.candidates?.length) {
     const parts = chunk.candidates[0]?.content?.parts || [];
     text = parts.map((p) => p.text || "").join("");
   }
-
   return text || "";
 }
 
@@ -61,15 +56,12 @@ export default async function handler(req, res) {
 
     const ai = getGenAI();
 
-    const primaryModel = "gemini-2.5-flash";
-    const fallbackModel = "gemini-2.5-flash-lite";
-
     const systemPrompt = `You are SafeAid Summarizer.
 Summarize medical documents clearly and simply for a layperson.
 Avoid complex medical terms; explain briefly if needed.
 Be calm, professional, and concise.`;
 
-    // ✅ BUILD PARTS CORRECTLY
+    // Build parts array (works for all Gemini models)
     const parts = [{ text: systemPrompt }];
 
     if (req.file) {
@@ -87,49 +79,55 @@ Be calm, professional, and concise.`;
       throw new Error("No input provided.");
     }
 
-    const contents = [
-      {
-        role: "user",
-        parts,
-      },
-    ];
+    const contents = [{ role: "user", parts }];
 
-    // ✅ SSE setup
+    // SSE setup
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
     });
 
-    let model = ai.getGenerativeModel({ model: primaryModel });
+    // ✅ Multi‑tier model fallback chain (same as chat)
+    const modelPriority = [
+      "gemini-2.5-flash",          // Primary
+      "gemini-2.5-flash-lite",     // Fallback 1
+      "gemini-3-flash",            // Fallback 2
+      "gemini-3.1-flash-lite",     // Fallback 3 (RPD: 500)
+      "gemini-2.0-flash",          // Fallback 4
+      "gemini-2.0-flash-lite",     // Fallback 5
+      "gemini-2.5-pro"             // Fallback 6
+    ];
+
     let result;
+    let usedModel = null;
 
-    try {
-      // 🔥 PRIMARY MODEL
-      result = await model.generateContentStream({ contents });
-    } catch (err) {
-      const status = err.status || err.statusCode;
-
-      if (status === 429) {
-        // 🔥 FALLBACK MODEL
-        model = ai.getGenerativeModel({ model: fallbackModel });
-
-        res.write(
-          `data: ${JSON.stringify({
-            info: "Switched to Flash Lite (fallback)",
-          })}\n\n`
-        );
-
+    for (const modelName of modelPriority) {
+      try {
+        const model = ai.getGenerativeModel({ model: modelName });
         result = await model.generateContentStream({ contents });
-      } else {
-        throw err;
+        usedModel = modelName;
+        if (modelName !== modelPriority[0]) {
+          res.write(`data: ${JSON.stringify({ info: `Using ${modelName} (fallback)` })}\n\n`);
+        }
+        break;
+      } catch (err) {
+        const status = err.status || err.statusCode;
+        if (status !== 429) {
+          // Non‑rate‑limit error – throw immediately
+          throw err;
+        }
+        // Rate limited – try next model
       }
     }
 
-    // ✅ STREAM RESPONSE
+    if (!result) {
+      throw new Error("ALL_MODELS_RATE_LIMITED");
+    }
+
+    // Stream the response
     for await (const chunk of result.stream) {
       const text = extractTextFromChunk(chunk);
-
       if (text.trim()) {
         res.write(`data: ${JSON.stringify({ text })}\n\n`);
       }
@@ -137,10 +135,15 @@ Be calm, professional, and concise.`;
 
     res.end();
   } catch (error) {
-    console.error("Error:", error);
+    console.error("Summarizer Error:", error);
 
-    const status = error.status || error.statusCode || 500;
-    const errorMsg = buildErrorMessage(status, error.message);
+    let errorMsg;
+    if (error.message === "ALL_MODELS_RATE_LIMITED") {
+      errorMsg = "Daily request limit reached for all AI models. Please try again tomorrow or upgrade your API plan.";
+    } else {
+      const status = error.status || error.statusCode || 500;
+      errorMsg = buildErrorMessage(status, error.message);
+    }
 
     if (res.headersSent) {
       res.write(`data: ${JSON.stringify({ error: errorMsg })}\n\n`);
@@ -148,6 +151,6 @@ Be calm, professional, and concise.`;
       return;
     }
 
-    res.status(status).json({ error: errorMsg });
+    res.status(error.status || 500).json({ error: errorMsg });
   }
-  }
+}
